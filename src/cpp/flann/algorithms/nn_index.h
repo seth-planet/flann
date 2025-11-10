@@ -433,8 +433,10 @@ public:
 		}
 #ifdef FLANN_USE_OPENCL
         else if (shouldCLKnnSearch(queries.rows, knn, params)) {
-            Matrix<size_t> iMat(queries.rows, knn, 2);
-            Matrix<DistanceType> dMat(queries.rows, knn, 2);
+            size_t* iData = new size_t[queries.rows * knn];
+            DistanceType* dData = new DistanceType[queries.rows * knn];
+            Matrix<size_t> iMat(iData, queries.rows, knn);
+            Matrix<DistanceType> dMat(dData, queries.rows, knn);
 
             knnSearchCL(queries, iMat, dMat, knn, params);
 
@@ -454,6 +456,9 @@ public:
                     dists[i][j] = dMat[i][j];
                 }
             }
+
+            delete[] iData;
+            delete[] dData;
         }
 #endif /* FLANN_USE_OPENCL */
 		else {
