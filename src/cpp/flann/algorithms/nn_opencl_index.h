@@ -71,8 +71,71 @@ TYPE_NAME_AND_SIZE(long, "long", LONG_MAX);
 TYPE_NAME_AND_SIZE(unsigned long, "ulong", ULONG_MAX);
 #undef TYPE_NAME_AND_SIZE
 
+// Comprehensive OpenCL error code to string mapping
+inline const char* clErrorString(cl_int err) {
+    switch(err) {
+        case CL_SUCCESS: return "Success";
+        case CL_DEVICE_NOT_FOUND: return "Device not found";
+        case CL_DEVICE_NOT_AVAILABLE: return "Device not available";
+        case CL_COMPILER_NOT_AVAILABLE: return "Compiler not available";
+        case CL_MEM_OBJECT_ALLOCATION_FAILURE: return "Memory allocation failure";
+        case CL_OUT_OF_RESOURCES: return "Out of resources";
+        case CL_OUT_OF_HOST_MEMORY: return "Out of host memory";
+        case CL_PROFILING_INFO_NOT_AVAILABLE: return "Profiling info not available";
+        case CL_MEM_COPY_OVERLAP: return "Memory copy overlap";
+        case CL_IMAGE_FORMAT_MISMATCH: return "Image format mismatch";
+        case CL_IMAGE_FORMAT_NOT_SUPPORTED: return "Image format not supported";
+        case CL_BUILD_PROGRAM_FAILURE: return "Build program failure";
+        case CL_MAP_FAILURE: return "Map failure";
+        case CL_INVALID_VALUE: return "Invalid value";
+        case CL_INVALID_DEVICE_TYPE: return "Invalid device type";
+        case CL_INVALID_PLATFORM: return "Invalid platform";
+        case CL_INVALID_DEVICE: return "Invalid device";
+        case CL_INVALID_CONTEXT: return "Invalid context";
+        case CL_INVALID_QUEUE_PROPERTIES: return "Invalid queue properties";
+        case CL_INVALID_COMMAND_QUEUE: return "Invalid command queue";
+        case CL_INVALID_HOST_PTR: return "Invalid host pointer";
+        case CL_INVALID_MEM_OBJECT: return "Invalid memory object";
+        case CL_INVALID_IMAGE_FORMAT_DESCRIPTOR: return "Invalid image format descriptor";
+        case CL_INVALID_IMAGE_SIZE: return "Invalid image size";
+        case CL_INVALID_SAMPLER: return "Invalid sampler";
+        case CL_INVALID_BINARY: return "Invalid binary";
+        case CL_INVALID_BUILD_OPTIONS: return "Invalid build options";
+        case CL_INVALID_PROGRAM: return "Invalid program";
+        case CL_INVALID_PROGRAM_EXECUTABLE: return "Invalid program executable";
+        case CL_INVALID_KERNEL_NAME: return "Invalid kernel name";
+        case CL_INVALID_KERNEL_DEFINITION: return "Invalid kernel definition";
+        case CL_INVALID_KERNEL: return "Invalid kernel";
+        case CL_INVALID_ARG_INDEX: return "Invalid argument index";
+        case CL_INVALID_ARG_VALUE: return "Invalid argument value";
+        case CL_INVALID_ARG_SIZE: return "Invalid argument size";
+        case CL_INVALID_KERNEL_ARGS: return "Invalid kernel arguments";
+        case CL_INVALID_WORK_DIMENSION: return "Invalid work dimension";
+        case CL_INVALID_WORK_GROUP_SIZE: return "Invalid work group size";
+        case CL_INVALID_WORK_ITEM_SIZE: return "Invalid work item size";
+        case CL_INVALID_GLOBAL_OFFSET: return "Invalid global offset";
+        case CL_INVALID_EVENT_WAIT_LIST: return "Invalid event wait list";
+        case CL_INVALID_EVENT: return "Invalid event";
+        case CL_INVALID_OPERATION: return "Invalid operation";
+        case CL_INVALID_GL_OBJECT: return "Invalid GL object";
+        case CL_INVALID_BUFFER_SIZE: return "Invalid buffer size";
+        case CL_INVALID_MIP_LEVEL: return "Invalid MIP level";
+        case CL_INVALID_GLOBAL_WORK_SIZE: return "Invalid global work size";
+        default: {
+            static char unknown[64];
+            snprintf(unknown, sizeof(unknown), "Unknown error code: %d", err);
+            return unknown;
+        }
+    }
+}
+
+// Improved error handling macro with detailed error information
 #define HandleFLANNErr(err) if ((err) != CL_SUCCESS) { \
-    throw FLANNException("OpenCL error."); \
+    char error_msg[512]; \
+    snprintf(error_msg, sizeof(error_msg), \
+        "OpenCL error at %s:%d - %s (code %d)", \
+        __FILE__, __LINE__, clErrorString(err), err); \
+    throw FLANNException(error_msg); \
 }
 
 class OpenCLIndex
@@ -130,8 +193,18 @@ public:
             own_cq_ = true;
 
             // Make a default command queue
+            // First, get an OpenCL platform (required for OpenCL 3.0 compatibility)
+            cl_platform_id platform;
+            cl_uint num_platforms;
+            err = clGetPlatformIDs(1, &platform, &num_platforms);
+            HandleFLANNErr(err);
+            if (num_platforms == 0) {
+                throw FLANNException("No OpenCL platforms found");
+            }
+
+            // Get a device from the platform
             cl_device_id device_id;
-            err = clGetDeviceIDs(NULL, CL_DEVICE_TYPE_ALL, 1, &device_id, NULL);
+            err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 1, &device_id, NULL);
             HandleFLANNErr(err);
             cl_context context = clCreateContext(0, 1, &device_id, NULL, NULL, &err);
             HandleFLANNErr(err);
@@ -162,6 +235,20 @@ public:
         cl_device_id dev;
         err = clGetCommandQueueInfo(cl_cmd_queue_, CL_QUEUE_DEVICE, sizeof(dev), &dev, NULL);
         HandleFLANNErr(err);
+
+        // Log device information for diagnostics
+        char device_name[256];
+        char device_version[256];
+        size_t max_work_group_size;
+        cl_uint max_compute_units;
+        clGetDeviceInfo(dev, CL_DEVICE_NAME, sizeof(device_name), device_name, NULL);
+        clGetDeviceInfo(dev, CL_DEVICE_VERSION, sizeof(device_version), device_version, NULL);
+        clGetDeviceInfo(dev, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(max_work_group_size), &max_work_group_size, NULL);
+        clGetDeviceInfo(dev, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(max_compute_units), &max_compute_units, NULL);
+        printf("[FLANN OpenCL] Device: %s\n", device_name);
+        printf("[FLANN OpenCL] OpenCL Version: %s\n", device_version);
+        printf("[FLANN OpenCL] Max Work Group Size: %zu\n", max_work_group_size);
+        printf("[FLANN OpenCL] Max Compute Units: %u\n", max_compute_units);
 
         // Init the cl_mem index
         initCLIndexMem(context);
