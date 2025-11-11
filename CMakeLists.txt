@@ -7,6 +7,12 @@ endif(COMMAND cmake_policy)
 project(flann)
 string(TOLOWER ${PROJECT_NAME} PROJECT_NAME_LOWER)
 
+# Set C++14 standard for modern features
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+message(STATUS "Using C++14 standard")
+
 include(${PROJECT_SOURCE_DIR}/cmake/flann_utils.cmake)
 set(FLANN_VERSION 1.9.2)
 DISSECT_VERSION()
