@@ -161,6 +161,12 @@ protected:
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index.buildCUDAKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
 		start_timer("Searching KNN...");
 		index.knnSearch(query, indices, dists, knn, search_params );
 		printf("done (%g seconds)\n", stop_timer());
@@ -200,6 +206,12 @@ protected:
 #ifdef FLANN_USE_OPENCL
 		start_timer("Set up OpenCL KNN...");
     	index.buildCLKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
@@ -513,6 +525,12 @@ protected:
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index.buildCUDAKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
 		start_timer("Searching KNN...");
 		index.knnSearch(query, indices, dists, knn, search_params );
 		printf("done (%g seconds)\n", stop_timer());
@@ -533,6 +551,12 @@ protected:
 #ifdef FLANN_USE_OPENCL
 		start_timer("Set up OpenCL KNN...");
     	index2.buildCLKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index2.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
@@ -557,6 +581,12 @@ protected:
 #ifdef FLANN_USE_OPENCL
 		start_timer("Set up OpenCL KNN...");
     	index3.buildCLKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index3.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
@@ -603,6 +633,12 @@ protected:
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index.buildCUDAKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
 		start_timer("Searching KNN...");
 		index.knnSearch(query, indices, dists, knn, search_params );
 		printf("done (%g seconds)\n", stop_timer());
@@ -623,6 +659,12 @@ protected:
 #ifdef FLANN_USE_OPENCL
 		start_timer("Set up OpenCL KNN...");
     	index2.buildCLKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index2.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
@@ -647,6 +689,12 @@ protected:
 #ifdef FLANN_USE_OPENCL
 		start_timer("Set up OpenCL KNN...");
     	index3.buildCLKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index3.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 

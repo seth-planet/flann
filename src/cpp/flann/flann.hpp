@@ -395,6 +395,35 @@ public:
     }
 #endif /* FLANN_USE_OPENCL */
 
+#ifdef FLANN_USE_CUDA
+    /**
+     * Prepare CUDA-accelerated k-NN search (matches OpenCL pattern)
+     *
+     * Converts CPU index to CUDA index if needed, then prepares GPU resources.
+     * Call once after buildIndex() before search operations.
+     *
+     * @param knn Number of nearest neighbors
+     * @param params Search parameters
+     */
+    void buildCUDAKnnSearch(size_t knn,
+                            const SearchParams& params = SearchParams())
+    {
+        IndexType* nnIndexTmp = nnIndex_;
+        switch(nnIndex_->getType()){
+            case FLANN_INDEX_KMEANS:
+                // Convert CPU→GPU on-demand
+                nnIndex_ = new cuda::KMeansCUDAIndex<Distance>(
+                    *(KMeansIndex<Distance>*)nnIndex_);
+
+                // Delete the CPU-only version
+                delete nnIndexTmp;
+            case FLANN_INDEX_KMEANS_CUDA:
+                return static_cast<cuda::KMeansCUDAIndex<Distance>*>(
+                    nnIndex_)->buildCUDAKnnSearch(knn, params);
+        }
+    }
+#endif /* FLANN_USE_CUDA */
+
 private:
     IndexType* load_saved_index(const Matrix<ElementType>& dataset, const std::string& filename, Distance distance)
     {

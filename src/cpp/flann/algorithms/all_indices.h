@@ -176,6 +176,9 @@ inline NNIndex<Distance>*
 	case FLANN_INDEX_KDTREE_CUDA:
 		nnIndex = create_index_<KDTreeCuda3dIndex,Distance,ElementType>(dataset, params, distance);
 		break;
+	case FLANN_INDEX_KMEANS_CUDA:
+		nnIndex = create_index_<cuda::KMeansCUDAIndex,Distance,ElementType>(dataset, params, distance);
+		break;
 #endif
 
 #ifdef FLANN_USE_OPENCL
