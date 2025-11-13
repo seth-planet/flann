@@ -87,6 +87,7 @@ enum flann_algorithm_t
     FLANN_INDEX_LSH 			= 6,
 #ifdef FLANN_USE_CUDA
     FLANN_INDEX_KDTREE_CUDA 	= 7,
+    FLANN_INDEX_KMEANS_CUDA 	= 8,
 #endif
 #ifdef FLANN_USE_OPENCL
     FLANN_INDEX_KMEANS_OPENCL     = 10,

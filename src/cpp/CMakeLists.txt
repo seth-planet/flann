@@ -27,27 +27,36 @@ set_target_properties(flann_cpp PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS YES)
 set(flann_install_targets flann_cpp)
 
 if (BUILD_CUDA_LIB)
-    SET(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS};-DFLANN_USE_CUDA;-Xcudafe \"--diag_suppress=partial_override\" ;-gencode=arch=compute_52,code=\"sm_52,compute_52\";-gencode=arch=compute_61,code=\"sm_61,compute_61\"")
-    if(CMAKE_COMPILER_IS_GNUCC)
-		set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS};-Xcompiler;-fPIC;" )
-        if (NVCC_COMPILER_BINDIR)
-            set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS};--compiler-bindir=${NVCC_COMPILER_BINDIR}")
-        endif()
-    else()
-	    set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS};" )
-    endif()
-    cuda_add_library(flann_cuda_s STATIC ${CU_SOURCES})
+    # Modern CMake CUDA: Use add_library with .cu sources directly
+    add_library(flann_cuda_s STATIC ${CU_SOURCES})
+    add_library(flann_cuda SHARED ${CU_SOURCES})
+
+    # Set CUDA properties
+    set_target_properties(flann_cuda_s flann_cuda PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        POSITION_INDEPENDENT_CODE ON
+    )
+
+    # Link CUDA runtime
+    target_link_libraries(flann_cuda_s PUBLIC CUDA::cudart)
+    target_link_libraries(flann_cuda PUBLIC CUDA::cudart)
+
+    # Set compile definitions
     set_property(TARGET flann_cuda_s PROPERTY COMPILE_DEFINITIONS FLANN_STATIC)
+    set_property(TARGET flann_cpp PROPERTY COMPILE_DEFINITIONS FLANN_USE_CUDA)
+    set_property(TARGET flann_cpp_s PROPERTY COMPILE_DEFINITIONS FLANN_STATIC FLANN_USE_CUDA)
+
+    # Add CUDA include directories for C++ library targets
+    target_include_directories(flann_cpp PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    target_include_directories(flann_cpp_s PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+
+    # Install targets
     if (CMAKE_BUILD_STATIC_LIBS)
         list(APPEND flann_install_targets flann_cuda_s)
     else()
         set_target_properties(flann_cuda_s PROPERTIES EXCLUDE_FROM_ALL true)
     endif()
-
-    cuda_add_library(flann_cuda SHARED ${CU_SOURCES})
     list(APPEND flann_install_targets flann_cuda)
-    set_property(TARGET flann_cpp PROPERTY COMPILE_DEFINITIONS FLANN_USE_CUDA)
-    set_property(TARGET flann_cpp_s PROPERTY COMPILE_DEFINITIONS FLANN_STATIC FLANN_USE_CUDA)
 else()
     set_property(TARGET flann_cpp_s PROPERTY COMPILE_DEFINITIONS FLANN_STATIC)
 endif()
@@ -105,6 +114,14 @@ if (BUILD_C_BINDINGS)
        SOVERSION ${FLANN_SOVERSION}
        DEFINE_SYMBOL FLANN_EXPORTS
     )
+endif()
+
+if (BUILD_CUDA_LIB)
+    set_property(TARGET flann PROPERTY COMPILE_DEFINITIONS FLANN_USE_CUDA)
+    set_property(TARGET flann_s PROPERTY COMPILE_DEFINITIONS FLANN_STATIC FLANN_USE_CUDA)
+    # Add CUDA include directories for C library targets
+    target_include_directories(flann PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    target_include_directories(flann_s PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
 endif()
 
 if (BUILD_OpenCL_LIB)

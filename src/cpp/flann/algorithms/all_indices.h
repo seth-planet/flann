@@ -43,6 +43,7 @@
 #include "flann/algorithms/autotuned_index.h"
 #ifdef FLANN_USE_CUDA
 #include "flann/algorithms/kdtree_cuda_3d_index.h"
+#include "flann/algorithms/cuda/kmeans_cuda_index.h"
 #endif
 #ifdef FLANN_USE_OPENCL
 #include "flann/algorithms/kmeans_opencl_index.h"
@@ -52,6 +53,12 @@
 
 namespace flann
 {
+
+#ifdef FLANN_USE_CUDA
+// Import CUDA types into main flann namespace
+using cuda::KMeansCUDAIndex;
+using cuda::KMeansCUDAIndexParams;
+#endif
 
 /**
  * enable_if sfinae helper

@@ -25,6 +25,10 @@ if (HDF5_FOUND)
         flann_add_gtest(flann_hierarchical_opencl_test flann_hierarchical_opencl_test.cpp flann_cpp ${TEST_LIBRARIES})
         target_link_libraries(flann_hierarchical_opencl_test ${OpenCL_LIBRARIES})
     endif()
+
+    if (BUILD_CUDA_LIB)
+        flann_add_cuda_gtest(flann_kmeans_cuda_test flann_kmeans_cuda_test.cpp flann_cuda_s ${TEST_LIBRARIES})
+    endif()
     
     flann_add_gtest(flann_kdtree_single_test flann_kdtree_single_test.cpp flann_cpp ${TEST_LIBRARIES})
     flann_add_gtest(flann_hierarchical_test flann_hierarchical_test.cpp flann_cpp ${TEST_LIBRARIES})

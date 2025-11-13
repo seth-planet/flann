@@ -50,6 +50,22 @@ else()
     message("BUILD_OpenCL_LIB is OFF, not compiling flann_opencl_example.cpp")
 endif()
 
+# Add CUDA include directories and libraries for examples when CUDA is enabled
+if (BUILD_CUDA_LIB)
+    if (TARGET flann_example_c)
+        target_include_directories(flann_example_c PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+        target_link_libraries(flann_example_c flann_cuda)
+    endif()
+    if (TARGET flann_example_cpp)
+        target_include_directories(flann_example_cpp PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+        target_link_libraries(flann_example_cpp flann_cuda)
+    endif()
+    if (TARGET flann_example_mpi)
+        target_include_directories(flann_example_mpi PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+        target_link_libraries(flann_example_mpi flann_cuda)
+    endif()
+endif()
+
 
 
 

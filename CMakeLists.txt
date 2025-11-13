@@ -154,16 +154,49 @@ if (BUILD_OpenCL_LIB)
     endif(OpenCL_FOUND)
 endif(BUILD_OpenCL_LIB)
 
-# CUDA support
+# CUDA support (modern CMake configuration)
 if (BUILD_CUDA_LIB)
-    find_package(CUDA)
-    if (CUDA_FOUND)
-        message(STATUS "CUDA found (include: ${CUDA_INCLUDE_DIRS}, lib: ${CUDA_LIBRARIES})")
-        include_directories(${CUDA_INCLUDE_DIRS})
-    else(CUDA_FOUND)
-        message(STATUS "CUDA not found, CUDA library will not be built")
+    # Modern CUDA support requires CMake 3.18+
+    if(CMAKE_VERSION VERSION_LESS "3.18")
+        message(WARNING "CUDA support requires CMake 3.18+, found ${CMAKE_VERSION}. Disabling CUDA.")
         set(BUILD_CUDA_LIB OFF)
-    endif(CUDA_FOUND)
+    else()
+        # Enable CUDA as a first-class language
+        enable_language(CUDA)
+
+        # Target GPU architectures (Volta through Hopper: compute capability 7.0-9.0)
+        set(CMAKE_CUDA_ARCHITECTURES 70 75 80 86 89 90 CACHE STRING "CUDA architectures to build for")
+        message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+
+        # CUDA C++ standard (match project C++ standard)
+        set(CMAKE_CUDA_STANDARD 14)
+        set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+        # CUDA compiler flags
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr")
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --use_fast_math")
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=-Wall,-Wextra")
+
+        # Debug flags
+        set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS_DEBUG} -G -g")
+
+        # Release flags
+        set(CMAKE_CUDA_FLAGS_RELEASE "${CMAKE_CUDA_FLAGS_RELEASE} -O3 -DNDEBUG")
+        set(CMAKE_CUDA_FLAGS_RELEASE "${CMAKE_CUDA_FLAGS_RELEASE} --use_fast_math")
+        set(CMAKE_CUDA_FLAGS_RELEASE "${CMAKE_CUDA_FLAGS_RELEASE} -lineinfo")
+
+        # Add FLANN_USE_CUDA definition
+        add_definitions(-DFLANN_USE_CUDA)
+
+        # Find CUDA Toolkit (for cudart, etc.)
+        find_package(CUDAToolkit 11.0)
+        if (CUDAToolkit_FOUND)
+            message(STATUS "CUDA Toolkit ${CUDAToolkit_VERSION} found")
+        else()
+            message(WARNING "CUDA Toolkit 11.0+ not found, CUDA library will not be built")
+            set(BUILD_CUDA_LIB OFF)
+        endif()
+    endif()
 endif(BUILD_CUDA_LIB)
 
 find_package(PkgConfig REQUIRED)
