@@ -408,19 +408,57 @@ public:
     void buildCUDAKnnSearch(size_t knn,
                             const SearchParams& params = SearchParams())
     {
-        IndexType* nnIndexTmp = nnIndex_;
-        switch(nnIndex_->getType()){
-            case FLANN_INDEX_KMEANS:
-                // Convert CPU→GPU on-demand
+        // Dispatch based on index type (avoids template instantiation issues with switch/static_cast)
+        flann_algorithm_t index_type = nnIndex_->getType();
+
+        // Handle K-Means indices
+        if (index_type == FLANN_INDEX_KMEANS || index_type == FLANN_INDEX_KMEANS_CUDA) {
+            // CUDA K-Means kernel only supports float element type
+            if (!std::is_same<ElementType, float>::value) {
+                throw FLANNException(
+                    "CUDA K-Means index requires float element type. "
+                    "For binary descriptors with Hamming distance, use HierarchicalCUDAIndex.");
+            }
+
+            // Convert CPU→GPU if needed
+            if (index_type == FLANN_INDEX_KMEANS) {
+                IndexType* nnIndexTmp = nnIndex_;
                 nnIndex_ = new cuda::KMeansCUDAIndex<Distance>(
                     *(KMeansIndex<Distance>*)nnIndex_);
-
-                // Delete the CPU-only version
                 delete nnIndexTmp;
-            case FLANN_INDEX_KMEANS_CUDA:
-                return static_cast<cuda::KMeansCUDAIndex<Distance>*>(
-                    nnIndex_)->buildCUDAKnnSearch(knn, params);
+            }
+
+            // Call GPU preparation (safe cast - type checked above)
+            return static_cast<cuda::KMeansCUDAIndex<Distance>*>(
+                nnIndex_)->buildCUDAKnnSearch(knn, params);
         }
+
+        // Handle Hierarchical indices
+        if (index_type == FLANN_INDEX_HIERARCHICAL || index_type == FLANN_INDEX_HIERARCHICAL_CUDA) {
+            // CUDA Hierarchical kernel only supports unsigned char element type
+            if (!std::is_same<ElementType, unsigned char>::value) {
+                throw FLANNException(
+                    "CUDA Hierarchical index requires unsigned char element type (binary descriptors). "
+                    "For float descriptors with L2/L1 distance, use KMeansCUDAIndex.");
+            }
+
+            // Convert CPU→GPU if needed
+            if (index_type == FLANN_INDEX_HIERARCHICAL) {
+                IndexType* nnIndexTmp = nnIndex_;
+                nnIndex_ = new cuda::HierarchicalCUDAIndex<Distance>(
+                    *(HierarchicalClusteringIndex<Distance>*)nnIndex_);
+                delete nnIndexTmp;
+            }
+
+            // Call GPU preparation (safe cast - type checked above)
+            return static_cast<cuda::HierarchicalCUDAIndex<Distance>*>(
+                nnIndex_)->buildCUDAKnnSearch(knn, params);
+        }
+
+        throw FLANNException(
+            "buildCUDAKnnSearch() only supports K-Means and Hierarchical index types. "
+            "Supported: FLANN_INDEX_KMEANS, FLANN_INDEX_KMEANS_CUDA, "
+            "FLANN_INDEX_HIERARCHICAL, FLANN_INDEX_HIERARCHICAL_CUDA.");
     }
 #endif /* FLANN_USE_CUDA */
 

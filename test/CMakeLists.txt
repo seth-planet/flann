@@ -29,6 +29,9 @@ if (HDF5_FOUND)
     if (BUILD_CUDA_LIB)
         flann_add_cuda_gtest(flann_kmeans_cuda_test flann_kmeans_cuda_test.cpp flann_cuda_s ${TEST_LIBRARIES})
         target_link_libraries(flann_kmeans_cuda_test ${LZ4_LIBRARIES} CUDA::cudart)
+
+        flann_add_cuda_gtest(flann_hierarchical_cuda_test flann_hierarchical_cuda_test.cpp flann_cuda_s ${TEST_LIBRARIES})
+        target_link_libraries(flann_hierarchical_cuda_test ${LZ4_LIBRARIES} CUDA::cudart)
     endif()
     
     flann_add_gtest(flann_kdtree_single_test flann_kdtree_single_test.cpp flann_cpp ${TEST_LIBRARIES})

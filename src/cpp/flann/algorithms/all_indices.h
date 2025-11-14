@@ -44,6 +44,7 @@
 #ifdef FLANN_USE_CUDA
 #include "flann/algorithms/kdtree_cuda_3d_index.h"
 #include "flann/algorithms/cuda/kmeans_cuda_index.h"
+#include "flann/algorithms/cuda/hierarchical_cuda_index.h"
 #endif
 #ifdef FLANN_USE_OPENCL
 #include "flann/algorithms/kmeans_opencl_index.h"
@@ -58,6 +59,8 @@ namespace flann
 // Import CUDA types into main flann namespace
 using cuda::KMeansCUDAIndex;
 using cuda::KMeansCUDAIndexParams;
+using cuda::HierarchicalCUDAIndex;
+using cuda::HierarchicalCUDAIndexParams;
 #endif
 
 /**
@@ -178,6 +181,9 @@ inline NNIndex<Distance>*
 		break;
 	case FLANN_INDEX_KMEANS_CUDA:
 		nnIndex = create_index_<cuda::KMeansCUDAIndex,Distance,ElementType>(dataset, params, distance);
+		break;
+	case FLANN_INDEX_HIERARCHICAL_CUDA:
+		nnIndex = create_index_<cuda::HierarchicalCUDAIndex,Distance,ElementType>(dataset, params, distance);
 		break;
 #endif
 

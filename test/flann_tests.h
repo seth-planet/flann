@@ -103,6 +103,8 @@ const char* index_type_to_name(flann_algorithm_t index_type)
 	case FLANN_INDEX_LSH: return "LSH";
 #ifdef FLANN_USE_CUDA
 	case FLANN_INDEX_KDTREE_CUDA: return "kd-tree CUDA";
+	case FLANN_INDEX_KMEANS_CUDA: return "k-means CUDA";
+	case FLANN_INDEX_HIERARCHICAL_CUDA: return "hierarchical CUDA";
 #endif
 #ifdef FLANN_USE_OPENCL
 	case FLANN_INDEX_KMEANS_OPENCL: return "k-means OpenCL";
