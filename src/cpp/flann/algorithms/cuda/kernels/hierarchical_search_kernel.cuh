@@ -101,7 +101,9 @@ __device__ inline int explore_root_branches_hamming(
     int actual_bytes,
     int max_pq_size
 ) {
-    // Root's children are at pivots[tree_id * branching ... (tree_id+1) * branching - 1]
+    // CRITICAL FIX: Roots are IMPLICIT (not stored in arrays)
+    // First-level children occupy pre-reserved slots: tree_id * branching
+    // Tree 0 → slots 0-31, Tree 1 → slots 32-63, etc. (matches OpenCL)
     int child_start = tree_id * branching;
 
     // Debug: Log root exploration for first thread/block
@@ -199,7 +201,9 @@ __device__ inline int explore_node_branches_hamming(
     int max_pq_size
 ) {
     const KMeansNodeGPU& node = tree_nodes[node_index];
-    int child_start = node.child_start;
+    // CRITICAL FIX: Use hybrid array for parent traversal (matching OpenCL algorithm)
+    // OpenCL dereferences nodeIndex before exploring: nodePtr = nodeIndexArr[nodeId]
+    int child_start = device_node_index[node_index];  // Read from hybrid array, NOT struct
     int child_count = node.child_count;
 
     // Debug: Log pivot access for first thread exploring roots

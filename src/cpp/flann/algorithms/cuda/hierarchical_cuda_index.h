@@ -509,92 +509,88 @@ protected:
         }
 
         // Flatten trees breadth-first with IMPLICIT root storage (matching OpenCL)
-        // Roots are virtual - only children are stored
-        std::queue<NodePtr> node_queue;
-        int node_index = 0;
+        // CRITICAL FIX: Match OpenCL's hybrid indexing scheme EXACTLY
+        // OpenCL pre-reserves indices 0-127 for first-level children (trees * branching)
+        // then stores deeper nodes starting at index 128
 
-        // Initialize queue with ROOT CHILDREN directly (skip roots themselves)
-        // Tree N's children will start at index N * branching
-        int total_first_level_children = 0;
-        for (size_t tree_id = 0; tree_id < this->tree_roots_.size(); ++tree_id) {
+        std::queue<NodePtr> node_queue;
+        std::queue<int> node_id_queue;  // Track which slot each node goes to
+
+        int num_trees = this->tree_roots_.size();
+        int first_level_slots = num_trees * this->branching_;  // 4 * 32 = 128
+        int next_available_slot = first_level_slots;  // Start at 128 for deeper nodes
+
+        // Step 1: Process roots and assign their children to slots 0-127
+        for (int tree_id = 0; tree_id < num_trees; ++tree_id) {
             NodePtr root = this->tree_roots_[tree_id];
 
-            // Sanity check: hierarchical roots must have children
+            // Sanity check
             if (root->childs.empty()) {
-                throw FLANNException("Hierarchical tree " + std::to_string(tree_id) +
-                                   " has degenerate root with no children");
+                throw FLANNException("Tree " + std::to_string(tree_id) + " root is leaf");
             }
 
-            // Enqueue all children of this root
+            // Assign this tree's children to their reserved slots
+            int child_slot_start = tree_id * this->branching_;  // 0, 32, 64, 96
+
             for (size_t i = 0; i < root->childs.size(); ++i) {
+                int child_slot = child_slot_start + i;
                 node_queue.push(root->childs[i]);
-                total_first_level_children++;
+                node_id_queue.push(child_slot);  // Child goes to its assigned slot
             }
         }
 
-        // Track next available index for children
-        // CRITICAL FIX: Start AFTER all first-level children we just enqueued!
-        // Otherwise first-level nodes would point to themselves
-        int next_child_node_idx = total_first_level_children;
-
-        // Breadth-first traversal to flatten tree structure
+        // Step 2: Process all nodes in BFS order
         while (!node_queue.empty()) {
             NodePtr node = node_queue.front();
             node_queue.pop();
 
-            KMeansNodeGPU& gpu_node = nodes_host[node_index];
+            int node_slot = node_id_queue.front();
+            node_id_queue.pop();
+
+            KMeansNodeGPU& gpu_node = nodes_host[node_slot];
+
+            // CRITICAL FIX: Copy pivot for ALL nodes (leaves AND parents)
+            // OpenCL does this at hierarchical_opencl_index.h:721-727
+            // The search kernel needs pivots for all children when exploring branches
+            if (node->pivot != nullptr) {
+                std::memcpy(&pivots_host[node_slot * padded_veclen],
+                           node->pivot,
+                           this->veclen_ * sizeof(ElementType));
+            }
 
             if (node->childs.empty()) {
-                // Leaf node: encode offset into dataset_indices as -(offset + 1)
+                // Leaf node
                 int leaf_offset = dataset_indices.size();
-                gpu_node.child_start = -(leaf_offset + 1);  // Negative marks leaf
-                gpu_node.pivot_index = -1;  // Leaves don't have pivots
+                gpu_node.child_start = -(leaf_offset + 1);
+                gpu_node.pivot_index = -1;
                 gpu_node.radius = 0.0f;
                 gpu_node.padding = 0;
 
-                // Add all dataset indices for this leaf
                 for (size_t i = 0; i < node->points.size(); ++i) {
                     size_t index = node->points[i].index;
-                    // Skip removed points if using removed points tracking
                     if (!this->removed_ || !this->removed_points_.test(index)) {
                         dataset_indices.push_back(static_cast<int>(index));
                     }
                 }
 
-                // Store actual count of indices added (after filtering removed)
                 gpu_node.child_count = static_cast<uint16_t>(
                     dataset_indices.size() - leaf_offset
                 );
             } else {
-                // Parent node: store pivot and children info
+                // Parent node
                 gpu_node.pivot_index = (node->pivot_index != SIZE_MAX) ?
                                       static_cast<int>(node->pivot_index) : -1;
-
-                // CRITICAL FIX: Use global counter instead of queue-based prediction
-                // This ensures correct absolute positioning when all roots are enqueued first
-                gpu_node.child_start = next_child_node_idx;
+                gpu_node.child_start = next_available_slot;  // Children start here
                 gpu_node.child_count = static_cast<uint16_t>(node->childs.size());
-
-                // Advance counter by number of children this node will add
-                next_child_node_idx += node->childs.size();
-
-                gpu_node.radius = 0.0f;  // Hierarchical doesn't use radius
+                gpu_node.radius = 0.0f;
                 gpu_node.padding = 0;
 
-                // Copy pivot descriptor with padding
-                if (node->pivot != nullptr) {
-                    std::memcpy(&pivots_host[node_index * padded_veclen],
-                               node->pivot,
-                               this->veclen_ * sizeof(ElementType));
-                }
-
-                // Enqueue children for processing
+                // Enqueue children at next available slots
                 for (size_t i = 0; i < node->childs.size(); ++i) {
                     node_queue.push(node->childs[i]);
+                    node_id_queue.push(next_available_slot++);
                 }
             }
-
-            node_index++;
         }
 
         // ========================================================================
