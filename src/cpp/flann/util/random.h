@@ -106,9 +106,13 @@ public:
         size_ = n;
         for (int i = 0; i < size_; ++i) vals_[i] = i;
 
-        std::random_device rd;
-        std::mt19937 g(rd());
-        std::shuffle(vals_.begin(), vals_.end(), g);
+        // FIX: Use deterministic Fisher-Yates shuffle with FLANN's seedable rand_int()
+        // instead of non-deterministic std::random_device
+        // This ensures reproducible results and matching pivots between CUDA/OpenCL
+        for (int i = size_ - 1; i > 0; --i) {
+            int j = rand_int(i + 1);
+            std::swap(vals_[i], vals_[j]);
+        }
 
         counter_ = 0;
     }

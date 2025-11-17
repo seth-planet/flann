@@ -180,6 +180,27 @@ protected:
 		else {
 			precision = computePrecisionDiscrete(gt_dists, dists);
 		}
+
+		// Debug: Print first query results vs ground truth
+		printf("[DEBUG] Query 0 results:\n");
+		printf("  Got:      ");
+		for (size_t i = 0; i < knn && i < indices.cols; ++i) {
+			printf("%zu ", indices[0][i]);
+		}
+		printf("\n  Expected: ");
+		for (size_t i = 0; i < knn && i < gt_indices.cols; ++i) {
+			printf("%zu ", gt_indices[0][i]);
+		}
+		printf("\n  Got dists:      ");
+		for (size_t i = 0; i < knn && i < dists.cols; ++i) {
+			printf("%d ", (int)dists[0][i]);
+		}
+		printf("\n  Expected dists: ");
+		for (size_t i = 0; i < knn && i < gt_dists.cols; ++i) {
+			printf("%d ", (int)gt_dists[0][i]);
+		}
+		printf("\n");
+
 		EXPECT_GE(precision, expected_precision);
 		printf("Precision: %g\n", precision);
 	}
@@ -228,6 +249,27 @@ protected:
 		else {
 			precision = computePrecisionDiscrete(gt_dists, dists);
 		}
+
+		// Debug: Print first query results vs ground truth
+		printf("[DEBUG] Query 0 results:\n");
+		printf("  Got:      ");
+		for (size_t i = 0; i < knn && i < indices.cols; ++i) {
+			printf("%zu ", indices[0][i]);
+		}
+		printf("\n  Expected: ");
+		for (size_t i = 0; i < knn && i < gt_indices.cols; ++i) {
+			printf("%zu ", gt_indices[0][i]);
+		}
+		printf("\n  Got dists:      ");
+		for (size_t i = 0; i < knn && i < dists.cols; ++i) {
+			printf("%d ", (int)dists[0][i]);
+		}
+		printf("\n  Expected dists: ");
+		for (size_t i = 0; i < knn && i < gt_dists.cols; ++i) {
+			printf("%d ", (int)gt_dists[0][i]);
+		}
+		printf("\n");
+
 		EXPECT_GE(precision, expected_precision);
 		printf("Precision: %g\n", precision);
 	}
@@ -280,6 +322,27 @@ protected:
 		else {
 			precision = computePrecisionDiscrete(gt_dists, dists);
 		}
+
+		// Debug: Print first query results vs ground truth
+		printf("[DEBUG] Query 0 results:\n");
+		printf("  Got:      ");
+		for (size_t i = 0; i < knn && i < indices.cols; ++i) {
+			printf("%zu ", indices[0][i]);
+		}
+		printf("\n  Expected: ");
+		for (size_t i = 0; i < knn && i < gt_indices.cols; ++i) {
+			printf("%zu ", gt_indices[0][i]);
+		}
+		printf("\n  Got dists:      ");
+		for (size_t i = 0; i < knn && i < dists.cols; ++i) {
+			printf("%d ", (int)dists[0][i]);
+		}
+		printf("\n  Expected dists: ");
+		for (size_t i = 0; i < knn && i < gt_dists.cols; ++i) {
+			printf("%d ", (int)gt_dists[0][i]);
+		}
+		printf("\n");
+
 		EXPECT_GE(precision, expected_precision);
 		printf("Precision: %g\n", precision);
 
@@ -369,6 +432,27 @@ protected:
 		else {
 			precision = computePrecisionDiscrete(gt_dists, dists);
 		}
+
+		// Debug: Print first query results vs ground truth
+		printf("[DEBUG] Query 0 results:\n");
+		printf("  Got:      ");
+		for (size_t i = 0; i < knn && i < indices.cols; ++i) {
+			printf("%zu ", indices[0][i]);
+		}
+		printf("\n  Expected: ");
+		for (size_t i = 0; i < knn && i < gt_indices.cols; ++i) {
+			printf("%zu ", gt_indices[0][i]);
+		}
+		printf("\n  Got dists:      ");
+		for (size_t i = 0; i < knn && i < dists.cols; ++i) {
+			printf("%d ", (int)dists[0][i]);
+		}
+		printf("\n  Expected dists: ");
+		for (size_t i = 0; i < knn && i < gt_dists.cols; ++i) {
+			printf("%d ", (int)gt_dists[0][i]);
+		}
+		printf("\n");
+
 		EXPECT_GE(precision, expected_precision);
 		printf("Precision: %g\n", precision);
 
