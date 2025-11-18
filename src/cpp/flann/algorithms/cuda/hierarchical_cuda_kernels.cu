@@ -43,8 +43,9 @@
 
 #define FLANN_USE_CUDA
 
-// Include the kernel implementation
+// Include the kernel implementations
 #include "kernels/hierarchical_search_kernel.cuh"
+#include "kernels/hierarchical_search_cooperative.cuh"
 
 // This .cu file exists purely to trigger CUDA compilation of the kernels.
 // The launch_hierarchical_search() function is inline in the .cuh header and

@@ -49,8 +49,9 @@ namespace cuda {
 // Only include kernel headers when compiling with nvcc
 #ifdef __CUDACC__
 #include "flann/algorithms/cuda/kernels/hierarchical_search_kernel.cuh"
+#include "flann/algorithms/cuda/kernels/hierarchical_search_cooperative.cuh"
 #else
-// Forward declare kernel launch function for non-CUDA compilation
+// Forward declare kernel launch functions for non-CUDA compilation
 bool launch_hierarchical_search(
     const unsigned char* dataset,
     const unsigned char* queries,
@@ -70,6 +71,22 @@ bool launch_hierarchical_search(
     int branching,
     dim3 grid,
     dim3 block);
+
+bool launch_hierarchical_search_cooperative(
+    const unsigned char* dataset,
+    const unsigned char* queries,
+    const KMeansNodeGPU* tree_nodes,
+    const unsigned char* tree_pivots,
+    const int* device_node_index,
+    int* result_indices,
+    int* result_distances,
+    size_t num_queries,
+    size_t padded_bytes,
+    size_t actual_bytes,
+    size_t num_nodes,
+    int k,
+    int num_trees,
+    int branching);
 #endif
 
 /**
@@ -969,33 +986,24 @@ protected:
         CUDABuffer<int> indices_gpu(num_queries * knn);
         CUDABuffer<int> dists_gpu(num_queries * knn);
 
-        // Calculate grid/block dimensions
-        int threads_per_block = 128;
-        int num_blocks = (num_queries + threads_per_block - 1) / threads_per_block;
-        dim3 grid(num_blocks);
-        dim3 block(threads_per_block);
-
-        // Launch kernel (links to kernel compiled with nvcc)
+        // PHASE 2: Run cooperative kernel to capture debug output for comparison
         int num_nodes = gpu_nodes_.count();
-        bool success = launch_hierarchical_search(
+
+        bool success = launch_hierarchical_search_cooperative(
             gpu_dataset_.get(),
             queries_gpu.get(),
             gpu_nodes_.get(),
             gpu_pivots_.get(),
-            gpu_dataset_indices_.get(),
-            gpu_node_index_.get(),  // CRITICAL FIX: Pass nodeIndex indirection array
+            gpu_node_index_.get(),  // CRITICAL: Pass nodeIndex indirection array
             indices_gpu.get(),
             dists_gpu.get(),
             num_queries,
             padded_bytes,      // For array indexing (data stored with padding)
             this->veclen_,     // For Hamming distance (actual descriptor length)
             num_nodes,
-            knn,
-            max_checks,
+            knn,               // Number of nearest neighbors
             gpu_num_trees_,    // Number of trees (roots at indices 0..num_trees-1)
-            this->branching_,  // Branching factor (tree N's children start at N*branching)
-            grid,
-            block
+            this->branching_   // Branching factor (tree N's children start at N*branching)
         );
 
         if (!success) {
