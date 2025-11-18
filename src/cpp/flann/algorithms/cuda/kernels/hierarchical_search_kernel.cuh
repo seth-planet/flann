@@ -333,54 +333,64 @@ __device__ inline int find_nearest_neighbor_hamming(
         }
 
         // Process all points in this leaf (indices are at leaf_ptr+1, leaf_ptr+2, ...)
-        for (int i = 0; i < leaf_size && checks < max_checks; ++i) {
+        // NOTE: Process complete leaf without mid-leaf termination to match OpenCL behavior
+        // and avoid missing potentially better neighbors within visited leaves
+        for (int i = 0; i < leaf_size; ++i) {
             // CRITICAL FIX: Read dataset index from hybrid array (double-indirection)
             int dataset_idx = device_node_index[leaf_ptr + 1 + i];
 
-            // Check if we've already examined this dataset point
-            bool already_checked = false;
-            for (int j = 0; j < num_checked; ++j) {
-                if (checked_indices[j] == dataset_idx) {
-                    already_checked = true;
-                    break;
+            // ALWAYS calculate distance (matching OpenCL's resultAddPoint)
+            const unsigned char* point = dataset + dataset_idx * padded_bytes;
+            int dist = compute_hamming_distance(query, point, actual_bytes);
+
+            // ========================================================================
+            // SORTED ARRAY INSERTION (matching OpenCL lines 1311-1330 exactly)
+            // ========================================================================
+            // OpenCL logic: if ((*checks) < N_RESULT || rsDist < resultDist[N_RESULT-1])
+            // Sorted array: worst result at END (index K-1), best at START (index 0)
+            if (checks < K || dist < result_dists[K - 1]) {
+                // Check for duplicates in results array ONLY (matching OpenCL line 1314-1316)
+                // OpenCL: for (int i = 0; i < (*checks) && i < N_RESULT-1; i++)
+                bool is_duplicate = false;
+                for (int j = 0; j < checks && j < K - 1; ++j) {
+                    if (result_indices[j] == dataset_idx && result_dists[j] == dist) {
+                        is_duplicate = true;
+                        break;
+                    }
+                }
+
+                // Skip insertion if duplicate (and DON'T increment checks - match OpenCL's return)
+                if (is_duplicate) {
+                    continue;
+                }
+
+                // Find insertion position (sorted array insertion)
+                // OpenCL: int i = min((*checks), N_RESULT-1);
+                int i = (checks < K - 1) ? checks : K - 1;  // min(checks, K-1)
+
+                // Shift larger distances to the right
+                // OpenCL: for (; i > 0 && rsDist < resultDist[i-1]; --i)
+                for (; i > 0 && dist < result_dists[i - 1]; --i) {
+                    result_dists[i] = result_dists[i - 1];
+                    result_indices[i] = result_indices[i - 1];
+                }
+
+                // Insert at sorted position (ascending order)
+                result_dists[i] = dist;
+                result_indices[i] = dataset_idx;
+
+                // Debug output (SORTED ARRAY format)
+                if (threadIdx.x == 0 && blockIdx.x == 0 && checks < 30) {
+                    printf("[SORTED INSERT %d] idx=%d, dist=%d at position %d\n",
+                           checks, dataset_idx, dist, i);
+                    printf("  Array: [%d,%d,%d] dists=[%d,%d,%d]\n\n",
+                           result_indices[0], result_indices[1], result_indices[2],
+                           result_dists[0], result_dists[1], result_dists[2]);
                 }
             }
 
-            if (already_checked) continue;  // Skip duplicate
-
-            // Mark as checked
-            checked_indices[num_checked++] = dataset_idx;
-
-            const unsigned char* point = dataset + dataset_idx * padded_bytes;
-
-            int dist = compute_hamming_distance(query, point, actual_bytes);
+            // ALWAYS increment checks at the end (matching OpenCL line 1330)
             checks++;
-
-            // ========================================================================
-            // PHASE 4: Heap & Leaf Processing Instrumentation (Debug - Query 0 only)
-            // ========================================================================
-            if (threadIdx.x == 0 && blockIdx.x == 0 && num_checked <= 30) {
-                // Log first 30 leaf visits
-                int prev_worst = result_dists[0];  // Max-heap root = worst distance
-                bool will_insert = (dist < prev_worst);
-
-                printf("[PHASE 4 LEAF %d] Dataset idx=%d, dist=%d, will_insert=%s\n",
-                       num_checked - 1, dataset_idx, dist,
-                       will_insert ? "YES" : "NO");
-                printf("  Heap before: ids=[%d,%d,%d] dists=[%d,%d,%d]\n",
-                       result_indices[0], result_indices[1], result_indices[2],
-                       result_dists[0], result_dists[1], result_dists[2]);
-            }
-
-            // Insert into k-NN heap if better than k-th neighbor
-            insert_into_heap_int<K>(result_dists, result_indices, dist, dataset_idx);
-
-            // Log heap state AFTER insertion if it changed
-            if (threadIdx.x == 0 && blockIdx.x == 0 && num_checked <= 30 && dist < result_dists[0]) {
-                printf("  Heap after:  ids=[%d,%d,%d] dists=[%d,%d,%d]\n\n",
-                       result_indices[0], result_indices[1], result_indices[2],
-                       result_dists[0], result_dists[1], result_dists[2]);
-            }
         }
 
         return -1;  // Leaf processed, no children to explore
@@ -467,11 +477,12 @@ __global__ void hierarchical_search_kernel(
     int pq_size = 0;
 
     // Per-thread duplicate detection array
-    // Tracks which dataset indices have been examined (prevents duplicate checks)
+    // NOTE: OpenCL doesn't use this - it only checks duplicates in the results array
+    // Keeping for now but will change duplicate detection logic to match OpenCL
     int checked_indices[MAX_CHECKS];
     int num_checked = 0;
 
-    int checks = 0;
+    int checks = 0;  // OpenCL initializes to 0 (incremented after each point examined)
     int current_tree = 1;  // Start at 1 (tree 0 explored before loop, like OpenCL)
 
     // Explore tree 0 root (IMPLICIT root - use special function)
@@ -527,20 +538,18 @@ __global__ void hierarchical_search_kernel(
                result_dists[0], result_dists[1], result_dists[2]);
     }
 
-    // CRITICAL: Sort the max-heap before copying to output
-    // Max-heap property does NOT guarantee sorted order - elements can be in arbitrary order
-    // Example: [45, 43, 45] is a valid max-heap but NOT sorted
-    // This matches OpenCL behavior (nn_opencl_index.h line 971: sortHeap())
-    sort_result_heap_int<K>(result_dists, result_ids);
+    // NO SORTING NEEDED: Results are already in sorted order (ascending distance)
+    // We use sorted array insertion (matching OpenCL), not max-heap
+    // Best result at index 0, worst at K-1
 
-    // Log final sorted results for query 0
+    // Log final results for query 0
     if (threadIdx.x == 0 && blockIdx.x == 0) {
-        printf("  Heap AFTER sorting:  ids=[%d,%d,%d] dists=[%d,%d,%d]\n\n",
+        printf("  Final sorted results: ids=[%d,%d,%d] dists=[%d,%d,%d]\n\n",
                result_ids[0], result_ids[1], result_ids[2],
                result_dists[0], result_dists[1], result_dists[2]);
     }
 
-    // Copy sorted results to output (now in ascending distance order)
+    // Copy results to output (already in ascending distance order)
     for (int i = 0; i < K; ++i) {
         result_indices[gid * K + i] = result_ids[i];
         result_distances[gid * K + i] = result_dists[i];
