@@ -396,9 +396,27 @@ __device__ inline void store_results(
     // Copy from heap to global result mem
     // OpenCL: for (int i = get_local_id(0); i < N_RESULT; i += LOC_SIZE)
     int output_offset = query_id * K;
-    for (int i = local_id; i < K; i += local_size) {
-        result_dists[output_offset + i] = heap_dists[i];
-        result_ids[output_offset + i] = heap_ids[i];
+
+    // Use vectorized writes for aligned k values (4x memory bandwidth)
+    if constexpr (K % 4 == 0) {
+        // Vectorized path: Use int4 for 4x faster memory writes
+        // Requires K to be multiple of 4 for correct alignment
+        int4* result_dists4 = reinterpret_cast<int4*>(result_dists + output_offset);
+        int4* result_ids4 = reinterpret_cast<int4*>(result_ids + output_offset);
+        int4* heap_dists4 = reinterpret_cast<int4*>(heap_dists);
+        int4* heap_ids4 = reinterpret_cast<int4*>(heap_ids);
+
+        // Each thread writes 4 elements at a time
+        for (int i = local_id; i < K/4; i += local_size) {
+            result_dists4[i] = heap_dists4[i];
+            result_ids4[i] = heap_ids4[i];
+        }
+    } else {
+        // Scalar path: Fallback for non-aligned k values
+        for (int i = local_id; i < K; i += local_size) {
+            result_dists[output_offset + i] = heap_dists[i];
+            result_ids[output_offset + i] = heap_ids[i];
+        }
     }
 }
 
@@ -480,26 +498,6 @@ __global__ void hierarchical_search_cooperative_kernel(
         actual_bytes, padded_bytes
     );
 
-    // DEBUG: Print entire heap for query 0 to see all neighbors found
-    if (query_id == 0 && local_id == 0) {
-        printf("\n[CUDA HEAP DEBUG] Query 0 - Full heap contents (sorted by distance):\n");
-        printf("  Top 20 neighbors:\n");
-        for (int i = 0; i < 20 && i < local_size * 2; i++) {
-            printf("    [%2d] ID=%6d dist=%3d\n", i, heap_ids[i], heap_dists[i]);
-        }
-        printf("  Looking for expected neighbors:\n");
-        printf("    Expected: ID=53249 (dist should be 34)\n");
-        printf("    Expected: ID=72652 (dist should be 37)\n");
-        printf("    Expected: ID=74891 (dist should be 37)\n");
-        printf("  Searching heap for these IDs...\n");
-        for (int i = 0; i < local_size * 2; i++) {
-            if (heap_ids[i] == 53249 || heap_ids[i] == 72652 || heap_ids[i] == 74891) {
-                printf("    FOUND: ID=%6d at heap[%3d] with dist=%3d\n", heap_ids[i], i, heap_dists[i]);
-            }
-        }
-    }
-    __syncthreads();
-
     // Phase 3: Store results (remove duplicates, copy to global)
     // OpenCL: storeResult(...)
     store_results<K>(
@@ -565,9 +563,16 @@ bool launch_hierarchical_search_cooperative(
         1 * sizeof(int) +                 // loc_ptr
         1 * sizeof(int);                  // done_flag
 
-    // Dispatch based on k (common configurations)
+    // Dispatch based on k (ordered by performance tier, then numerically)
+    // Tier 4: Non-aligned (kept for API compatibility)
     if (k == 1) {
         hierarchical_search_cooperative_kernel<1><<<grid, block, shared_mem_bytes>>>(
+            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            result_indices, result_distances,
+            num_queries, num_nodes, num_trees, branching,
+            actual_bytes, padded_bytes);
+    } else if (k == 2) {
+        hierarchical_search_cooperative_kernel<2><<<grid, block, shared_mem_bytes>>>(
             tree_nodes, device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
@@ -578,8 +583,22 @@ bool launch_hierarchical_search_cooperative(
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
+    // Tier 3: Multiple of 4 (vectorized)
+    } else if (k == 4) {
+        hierarchical_search_cooperative_kernel<4><<<grid, block, shared_mem_bytes>>>(
+            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            result_indices, result_distances,
+            num_queries, num_nodes, num_trees, branching,
+            actual_bytes, padded_bytes);
     } else if (k == 5) {
         hierarchical_search_cooperative_kernel<5><<<grid, block, shared_mem_bytes>>>(
+            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            result_indices, result_distances,
+            num_queries, num_nodes, num_trees, branching,
+            actual_bytes, padded_bytes);
+    // Tier 2: Multiple of 8 (good vectorization)
+    } else if (k == 8) {
+        hierarchical_search_cooperative_kernel<8><<<grid, block, shared_mem_bytes>>>(
             tree_nodes, device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
@@ -590,8 +609,33 @@ bool launch_hierarchical_search_cooperative(
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
+    } else if (k == 12) {
+        hierarchical_search_cooperative_kernel<12><<<grid, block, shared_mem_bytes>>>(
+            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            result_indices, result_distances,
+            num_queries, num_nodes, num_trees, branching,
+            actual_bytes, padded_bytes);
+    // Tier 1: Multiple of 16 (optimal - cache-aligned + vectorized)
+    } else if (k == 16) {
+        hierarchical_search_cooperative_kernel<16><<<grid, block, shared_mem_bytes>>>(
+            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            result_indices, result_distances,
+            num_queries, num_nodes, num_trees, branching,
+            actual_bytes, padded_bytes);
     } else if (k == 20) {
         hierarchical_search_cooperative_kernel<20><<<grid, block, shared_mem_bytes>>>(
+            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            result_indices, result_distances,
+            num_queries, num_nodes, num_trees, branching,
+            actual_bytes, padded_bytes);
+    } else if (k == 24) {
+        hierarchical_search_cooperative_kernel<24><<<grid, block, shared_mem_bytes>>>(
+            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            result_indices, result_distances,
+            num_queries, num_nodes, num_trees, branching,
+            actual_bytes, padded_bytes);
+    } else if (k == 32) {
+        hierarchical_search_cooperative_kernel<32><<<grid, block, shared_mem_bytes>>>(
             tree_nodes, device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
@@ -602,14 +646,40 @@ bool launch_hierarchical_search_cooperative(
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
+    } else if (k == 64) {
+        hierarchical_search_cooperative_kernel<64><<<grid, block, shared_mem_bytes>>>(
+            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            result_indices, result_distances,
+            num_queries, num_nodes, num_trees, branching,
+            actual_bytes, padded_bytes);
     } else if (k == 100) {
         hierarchical_search_cooperative_kernel<100><<<grid, block, shared_mem_bytes>>>(
             tree_nodes, device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
+    } else if (k == 128) {
+        hierarchical_search_cooperative_kernel<128><<<grid, block, shared_mem_bytes>>>(
+            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            result_indices, result_distances,
+            num_queries, num_nodes, num_trees, branching,
+            actual_bytes, padded_bytes);
     } else {
-        // Unsupported k
+        // Unsupported k value
+        fprintf(stderr,
+            "CUDA Error: Unsupported k=%d for hierarchical search.\n"
+            "\n"
+            "Supported k values (by performance tier):\n"
+            "  Tier 1 (optimal, mult of 16):    16, 32, 64, 128\n"
+            "  Tier 2 (good, mult of 8):        8, 24\n"
+            "  Tier 3 (vectorized, mult of 4):  4, 12, 20\n"
+            "  Tier 4 (compatible):             1, 2, 3, 5, 10, 50, 100\n"
+            "\n"
+            "Recommendation: Use k that is multiple of 4 for best performance.\n"
+            "                Multiple of 16 is optimal (vectorized + cache-aligned).\n"
+            "\n"
+            "To add custom k: edit hierarchical_search_cooperative.cuh line ~548\n",
+            k);
         return false;
     }
 
