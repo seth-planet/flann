@@ -229,9 +229,7 @@ public:
           gpu_dataset_indices_(),    // User must call buildCUDAKnnSearch()
           gpu_node_index_()          // CRITICAL FIX: Initialize nodeIndex buffer
     {
-        fprintf(stderr, "[DEBUG] HierarchicalCUDAIndex copy constructor ENTRY\n");
         // GPU buffers start empty - user must call buildCUDAKnnSearch()
-        fprintf(stderr, "[DEBUG] HierarchicalCUDAIndex copy constructor EXIT\n");
     }
 
     /**
@@ -239,7 +237,6 @@ public:
      */
     ~HierarchicalCUDAIndex()
     {
-        fprintf(stderr, "[DEBUG] ~HierarchicalCUDAIndex() destructor called\n");
     }
 
     /**
@@ -290,14 +287,10 @@ public:
      */
     void buildCUDAKnnSearch(int knn, const SearchParams& params = SearchParams())
     {
-        const char* msg = "[DEBUG] buildCUDAKnnSearch() ENTRY\n";
-        write(2, msg, strlen(msg));
         if (this->tree_roots_.empty()) {
             throw FLANNException("Cannot prepare GPU search: index not built yet. "
                                "Call buildIndex() first.");
         }
-        msg = "[DEBUG] tree_roots_ not empty\n";
-        write(2, msg, strlen(msg));
 
         // Check that trees are large enough (not degenerate)
         for (size_t i = 0; i < this->tree_roots_.size(); ++i) {
@@ -474,12 +467,9 @@ protected:
      */
     void uploadToGPU()
     {
-        printf("[DEBUG] uploadToGPU() ENTRY\n"); fflush(stdout);
         if (gpu_initialized_) {
-            printf("[DEBUG] Already uploaded, returning\n"); fflush(stdout);
             return;  // Already uploaded
         }
-        printf("[DEBUG] Starting upload process...\n"); fflush(stdout);
 
         // Count nodes in all trees (breadth-first traversal)
         // CRITICAL FIX: Count root CHILDREN only (roots are implicit, not stored)
@@ -497,19 +487,14 @@ protected:
         }
 
         // Sanity checks
-        printf("[DEBUG] After counting: num_nodes=%d, num_parents=%d, num_leaves=%d\n", num_nodes, num_parents, num_leaves); fflush(stdout);
         if (num_nodes == 0) {
             throw FLANNException("Cannot upload empty tree to GPU");
         }
-        printf("[DEBUG] Sanity check passed\n"); fflush(stdout);
 
         // CRITICAL FIX: Pad to multiple of 4 to match OpenCL exactly
         // OpenCL uses: n_veclen = 4*((veclen+3)/4)
         // Must use identical formula for comparison
         int padded_veclen = 4 * ((this->veclen_ + 3) / 4);
-
-        printf("[UPLOAD DEBUG] veclen_=%zu, padded_veclen=%d (multiple of 4, matching OpenCL), sizeof(ElementType)=%zu\n",
-               this->veclen_, padded_veclen, sizeof(ElementType));
 
         // Allocate host memory for flattening
         std::vector<KMeansNodeGPU> nodes_host(num_nodes);
@@ -611,35 +596,14 @@ protected:
         }
 
         // ========================================================================
-        // ========================================================================
-        // PHASE 3: nodeIndex Construction - Comparing CUDA vs OpenCL Algorithms
-        // ========================================================================
-
-        printf("\n");
-        printf("╔════════════════════════════════════════════════════════════════════╗\n");
-        printf("║  PHASE 3: nodeIndex Algorithm Investigation                       ║\n");
-        printf("╚════════════════════════════════════════════════════════════════════╝\n");
-        printf("\n");
-        printf("[PHASE 3] Tree Structure:\n");
-        printf("  Total nodes: %d\n", num_nodes);
-        printf("  Trees: %zu, Branching: %d\n", this->tree_roots_.size(), this->branching_);
-        printf("  Parents: %d, Leaves: %d\n", num_parents, num_leaves);
-        printf("\n");
-
-        // ========================================================================
-        // PHASE 4: Hybrid Array Construction - Matching OpenCL Exactly
+        // Hybrid Array Construction - Matching OpenCL Exactly
         // ========================================================================
         // Build hybrid flat array containing both pointers AND embedded leaf data
         // Structure: [node_pointers...][leaf_region_1: count, idx...][leaf_region_2...]
 
-        printf("[PHASE 4] Building hybrid nodeIndex array (OpenCL-style)\n");
-
         // Calculate hybrid array size
         int num_leaf_indices = dataset_indices.size();
         int hybrid_size = num_nodes + num_leaf_indices + num_leaves;  // pointers + data + counts
-
-        printf("  Hybrid array size: %d (nodes: %d + leaf_data: %d + counts: %d)\n",
-               hybrid_size, num_nodes, num_leaf_indices, num_leaves);
 
         std::vector<int> hybrid_node_index(hybrid_size);
         int next_data_ptr = num_nodes;  // Data section starts after pointer section
@@ -668,224 +632,19 @@ protected:
             }
         }
 
-        printf("  Built hybrid array with %d total elements\n", next_data_ptr);
-        printf("  Pointer section: [0..%d], Data section: [%d..%d]\n",
-               num_nodes - 1, num_nodes, next_data_ptr - 1);
-
-        // Validation: Print first 20 values
-        printf("  First 20 hybrid array values:\n    ");
-        for (int i = 0; i < 20 && i < hybrid_size; ++i) {
-            printf("%d ", hybrid_node_index[i]);
-        }
-        printf("\n");
-
-        // Show example leaf data region
-        if (num_nodes > 0) {
-            int first_leaf_idx = -1;
-            for (int i = 0; i < num_nodes; ++i) {
-                if (nodes_host[i].child_start < 0) {
-                    first_leaf_idx = i;
-                    break;
-                }
-            }
-            if (first_leaf_idx >= 0) {
-                int leaf_ptr = hybrid_node_index[first_leaf_idx];
-                int leaf_count = hybrid_node_index[leaf_ptr];
-                printf("  Example leaf node %d: ptr=%d, count=%d, indices=[",
-                       first_leaf_idx, leaf_ptr, leaf_count);
-                for (int j = 0; j < std::min(5, leaf_count); ++j) {
-                    printf("%d ", hybrid_node_index[leaf_ptr + 1 + j]);
-                }
-                if (leaf_count > 5) printf("...");
-                printf("]\n");
-            }
-        }
-        printf("\n");
-
-        // ========================================================================
-        // End of hybrid array construction
-        // ========================================================================
-
         // Allocate and upload GPU buffers using .resize()
-        fprintf(stderr, "[DEBUG] Before gpu_nodes_.resize(%d)\n", num_nodes);
         gpu_nodes_.resize(num_nodes);
-        fprintf(stderr, "[DEBUG] Before gpu_pivots_.resize(%d)\n", num_nodes * padded_veclen);
         gpu_pivots_.resize(num_nodes * padded_veclen);
-        fprintf(stderr, "[DEBUG] Before gpu_dataset_.resize(%d)\n", this->size_ * padded_veclen);
         gpu_dataset_.resize(this->size_ * padded_veclen);
-        fprintf(stderr, "[DEBUG] Before gpu_dataset_indices_.resize(%d)\n", (int)dataset_indices.size());
         gpu_dataset_indices_.resize(dataset_indices.size());
-        fprintf(stderr, "[DEBUG] Before gpu_node_index_.resize(%d) - HYBRID ARRAY\n", hybrid_size);
         gpu_node_index_.resize(hybrid_size);  // CRITICAL: Hybrid array with embedded leaf data
-        fprintf(stderr, "[DEBUG] After all resizes\n");
 
-        fprintf(stderr, "[DEBUG] Before gpu_nodes_.upload\n");
         gpu_nodes_.upload(nodes_host.data(), num_nodes);
-        fprintf(stderr, "[DEBUG] Before gpu_pivots_.upload\n");
         gpu_pivots_.upload(pivots_host.data(), num_nodes * padded_veclen);
-        fprintf(stderr, "[DEBUG] Before gpu_dataset_.upload\n");
         gpu_dataset_.upload(dataset_host.data(), this->size_ * padded_veclen);
-        fprintf(stderr, "[DEBUG] Before gpu_dataset_indices_.upload\n");
         gpu_dataset_indices_.upload(dataset_indices.data(), dataset_indices.size());
-        fprintf(stderr, "[DEBUG] Before gpu_node_index_.upload - HYBRID ARRAY\n");
         gpu_node_index_.upload(hybrid_node_index.data(), hybrid_size);  // CRITICAL: Upload hybrid array
-        fprintf(stderr, "[DEBUG] After all uploads\n");
 
-        // ========================================================================
-        // PHASE 1 VALIDATION: Save CUDA structure to file for comparison with OpenCL
-        // ========================================================================
-        {
-            FILE* cuda_log = fopen("/tmp/cuda_structure.log", "w");
-            if (cuda_log) {
-                fprintf(cuda_log, "=== CUDA HIERARCHICAL INDEX STRUCTURE ===\n\n");
-
-                // Log tree structure summary
-                fprintf(cuda_log, "TREE SUMMARY:\n");
-                fprintf(cuda_log, "  Total nodes: %d\n", num_nodes);
-                fprintf(cuda_log, "  Parents: %d, Leaves: %d\n", num_parents, num_leaves);
-                fprintf(cuda_log, "  Trees: %zu, Branching: %d\n", this->tree_roots_.size(), this->branching_);
-                fprintf(cuda_log, "  Hybrid array size: %d\n\n", hybrid_size);
-
-                // Log first 100 node structures
-                fprintf(cuda_log, "FIRST 100 NODES (child_start values):\n");
-                for (int i = 0; i < 100 && i < num_nodes; ++i) {
-                    const KMeansNodeGPU& node = nodes_host[i];
-                    fprintf(cuda_log, "  Node[%3d]: child_start=%6d, count=%3d, %s",
-                           i, node.child_start, node.child_count,
-                           node.child_start < 0 ? "LEAF\n" : "PARENT\n");
-                }
-                fprintf(cuda_log, "\n");
-
-                // Log first 100 hybrid array values
-                fprintf(cuda_log, "FIRST 100 HYBRID ARRAY VALUES:\n");
-                for (int i = 0; i < 100 && i < hybrid_size; ++i) {
-                    fprintf(cuda_log, "  hybrid[%3d] = %6d\n", i, hybrid_node_index[i]);
-                }
-                fprintf(cuda_log, "\n");
-
-                // Log first 100 pivot descriptors (first 8 bytes each)
-                fprintf(cuda_log, "FIRST 100 PIVOTS (first 8 bytes each):\n");
-                for (int i = 0; i < 100 && i < num_nodes; ++i) {
-                    const ElementType* pivot = &pivots_host[i * padded_veclen];
-                    fprintf(cuda_log, "  Pivot[%3d]: ", i);
-                    for (int j = 0; j < 8 && j < padded_veclen; ++j) {
-                        fprintf(cuda_log, "%02x ", (unsigned char)pivot[j]);
-                    }
-                    fprintf(cuda_log, "\n");
-                }
-                fprintf(cuda_log, "\n");
-
-                fclose(cuda_log);
-                printf("[PHASE 1] CUDA structure saved to /tmp/cuda_structure.log\n");
-            } else {
-                fprintf(stderr, "[ERROR] Could not open /tmp/cuda_structure.log for writing\n");
-            }
-        }
-        // ========================================================================
-
-        // Debug: Print first 4 nodes (tree roots)
-        printf("[DEBUG] Tree root nodes:\n");
-        for (int i = 0; i < 4 && i < num_nodes; ++i) {
-            printf("  Node %d: child_start=%d, child_count=%d, level=%d\n",
-                   i, nodes_host[i].child_start, nodes_host[i].child_count, nodes_host[i].level);
-        }
-
-        // Debug: Show pivot storage pattern
-        printf("[DEBUG] Pivot array layout (first 8 pivots, showing first 4 bytes each):\n");
-        for (int i = 0; i < 8 && i < num_nodes; ++i) {
-            const ElementType* pivot_ptr = &pivots_host[i * padded_veclen];
-            printf("  Pivot[%d]: %02x %02x %02x %02x", i,
-                   (unsigned char)pivot_ptr[0], (unsigned char)pivot_ptr[1],
-                   (unsigned char)pivot_ptr[2], (unsigned char)pivot_ptr[3]);
-            if (i < 4) {
-                printf(" (root %d)\n", i);
-            } else {
-                printf(" (tree 0 child %d)\n", i - 4);
-            }
-        }
-
-        // ========================================================================
-        // PHASE 1: Data Structure Verification (Debug Instrumentation)
-        // ========================================================================
-        printf("\n[PHASE 1] Verifying uploaded data structures...\n");
-
-        // Verify tree nodes (download first 32)
-        int verify_node_count = std::min(32, num_nodes);
-        std::vector<KMeansNodeGPU> nodes_verify(verify_node_count);
-        gpu_nodes_.download(nodes_verify.data(), verify_node_count);
-
-        printf("[CUDA NODES] First %d nodes:\n", verify_node_count);
-        for (int i = 0; i < verify_node_count && i < 8; ++i) {
-            printf("  Node %d: child_start=%d, child_count=%d, pivot_idx=%d, level=%d\n",
-                   i, nodes_verify[i].child_start, nodes_verify[i].child_count,
-                   nodes_verify[i].pivot_index, nodes_verify[i].level);
-        }
-
-        // Verify pivots (download first 8 full descriptors)
-        int verify_pivot_count = std::min(8, num_nodes);
-        std::vector<ElementType> pivots_verify(verify_pivot_count * padded_veclen);
-        gpu_pivots_.download(pivots_verify.data(), verify_pivot_count * padded_veclen);
-
-        printf("[CUDA PIVOTS] First %d pivots (showing first 16 bytes each):\n", verify_pivot_count);
-        for (int i = 0; i < verify_pivot_count; ++i) {
-            printf("  Pivot %d: ", i);
-            for (int j = 0; j < padded_veclen && j < 16; ++j) {
-                printf("%02x ", (unsigned char)pivots_verify[i * padded_veclen + j]);
-            }
-            if (padded_veclen > 16) printf("... ");
-            printf("(padded_len=%d)\n", padded_veclen);
-        }
-
-        // Verify dataset (download first 4 descriptors)
-        int verify_dataset_count = std::min(4, (int)this->size_);
-        std::vector<ElementType> dataset_verify(verify_dataset_count * padded_veclen);
-        gpu_dataset_.download(dataset_verify.data(), verify_dataset_count * padded_veclen);
-
-        printf("[CUDA DATASET] First %d dataset descriptors (showing first 16 bytes each):\n", verify_dataset_count);
-        for (int i = 0; i < verify_dataset_count; ++i) {
-            printf("  Dataset %d: ", i);
-            for (int j = 0; j < padded_veclen && j < 16; ++j) {
-                printf("%02x ", (unsigned char)dataset_verify[i * padded_veclen + j]);
-            }
-            if (padded_veclen > 16) printf("... ");
-            printf("\n");
-        }
-
-        printf("[PHASE 1] Data structure verification complete.\n\n");
-        // ========================================================================
-
-        // ========================================================================
-        // VALIDATION: Compare tree_nodes.child_start with OpenCL nodeIndex values
-        // ========================================================================
-        printf("\n[VALIDATION] CUDA tree_nodes.child_start values (compare with OpenCL nodeIndex):\n");
-        printf("For OpenCL comparison: nodeIndex[i] should equal tree_nodes[i].child_start\n");
-        printf("(if structures are equivalent)\n\n");
-
-        int validation_count = std::min(10, num_nodes);
-        std::vector<KMeansNodeGPU> validation_nodes(validation_count);
-        gpu_nodes_.download(validation_nodes.data(), validation_count);
-
-        printf("First %d CUDA tree_nodes[i].child_start values:\n", validation_count);
-        for (int i = 0; i < validation_count; ++i) {
-            int child_start = validation_nodes[i].child_start;
-            int child_count = validation_nodes[i].child_count;
-            int level = validation_nodes[i].level;
-
-            if (child_start >= 0) {
-                // Parent node - child_start is index to first child
-                printf("  tree_nodes[%d].child_start = %d  (parent: %d children at indices %d-%d, level %d)\n",
-                       i, child_start, child_count, child_start, child_start + child_count - 1, level);
-            } else {
-                // Leaf node - child_start is negative offset
-                int leaf_offset = -(child_start + 1);
-                printf("  tree_nodes[%d].child_start = %d  (leaf: offset=%d, %d points, level %d)\n",
-                       i, child_start, leaf_offset, child_count, level);
-            }
-        }
-
-        printf("\n[VALIDATION] Expected OpenCL nodeIndex[i] values should match above child_start values.\n");
-        printf("If OpenCL shows DIFFERENT values, CUDA needs nodeIndex-equivalent array.\n\n");
-        // ========================================================================
 
         gpu_initialized_ = true;
     }
@@ -966,9 +725,6 @@ protected:
         // Must use identical formula for comparison
         int padded_bytes = 4 * ((this->veclen_ + 3) / 4);
 
-        printf("[SEARCH DEBUG] veclen_=%zu, padded_bytes=%d (multiple of 4, matching OpenCL), sizeof(ElementType)=%zu\n",
-               this->veclen_, padded_bytes, sizeof(ElementType));
-
         // Upload queries to GPU
         CUDABuffer<ElementType> queries_gpu(num_queries * padded_bytes);
         std::vector<ElementType> padded_queries(num_queries * padded_bytes, 0);
@@ -990,10 +746,10 @@ protected:
         int num_nodes = gpu_nodes_.count();
 
         bool success = launch_hierarchical_search_cooperative(
-            gpu_dataset_.get(),
-            queries_gpu.get(),
+            reinterpret_cast<const unsigned char*>(gpu_dataset_.get()),
+            reinterpret_cast<const unsigned char*>(queries_gpu.get()),
             gpu_nodes_.get(),
-            gpu_pivots_.get(),
+            reinterpret_cast<const unsigned char*>(gpu_pivots_.get()),
             gpu_node_index_.get(),  // CRITICAL: Pass nodeIndex indirection array
             indices_gpu.get(),
             dists_gpu.get(),

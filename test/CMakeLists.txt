@@ -52,6 +52,34 @@ if (HDF5_FOUND AND BUILD_CUDA_LIB)
     flann_add_cuda_gtest(flann_cuda_test flann_cuda_test.cu flann_cpp ${HDF5_LIBRARIES} flann_cuda)
 endif()
 
+#---------- benchmark executable --------------
+if (HDF5_FOUND)
+    # Comprehensive benchmark for CPU vs OpenCL vs CUDA
+    add_executable(benchmark_comprehensive ../scripts/benchmark_comprehensive.cpp)
+    target_include_directories(benchmark_comprehensive PRIVATE ${HDF5_INCLUDE_DIR})
+    target_link_libraries(benchmark_comprehensive ${LZ4_LINK_LIBRARIES})
+    target_link_libraries(benchmark_comprehensive flann_cpp ${TEST_LIBRARIES})
+
+    # OpenCL support
+    if (BUILD_OpenCL_LIB)
+        target_compile_definitions(benchmark_comprehensive PRIVATE FLANN_USE_OPENCL)
+        target_link_libraries(benchmark_comprehensive ${OpenCL_LIBRARIES})
+    endif()
+
+    # CUDA support
+    if (BUILD_CUDA_LIB)
+        target_compile_definitions(benchmark_comprehensive PRIVATE FLANN_USE_CUDA)
+        target_include_directories(benchmark_comprehensive PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+        target_link_libraries(benchmark_comprehensive flann_cuda CUDA::cudart)
+    endif()
+
+    # Optimization flags for benchmarking
+    target_compile_options(benchmark_comprehensive PRIVATE -O3 -march=native)
+
+    install(TARGETS benchmark_comprehensive DESTINATION bin)
+    message(STATUS "Building benchmark_comprehensive")
+endif()
+
 #---------- pyunit tests --------------
 if (BUILD_PYTHON_BINDINGS)
     flann_add_pyunit(test_nn.py)

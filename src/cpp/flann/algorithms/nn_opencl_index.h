@@ -681,6 +681,7 @@ protected:
                 "const __global ELEMENT_TYPE *dataset,\n"
                 "__local int *locDone, __local int *locPtr,\n"
                 "__local DISTANCE_TYPE *heapDist, __local int *heapId,\n"
+                "__local int *leafCount,\n"
                 "const int nNodes);\n"
 
 "void findNodes(const __global int *nodeIndex,\n"
@@ -738,6 +739,7 @@ protected:
     "__local ELEMENT_TYPE query[N_VECLEN];\n"
     "__local int locPtr;\n"
     "__local int locDone;\n"
+    "__local int leafCount;\n"
 
     // All threads in a group preform (approx) MAX_CHECKS in parallel
     // for one query (one query per thread group)
@@ -749,7 +751,7 @@ protected:
     "findNodes(nodeIndex, nodePivots, nodeVariance, &locDone, query, heapDist, heapId, nNodes);\n"
 
     // Go from leaf pointers in the heap to a sorted set of leaves
-    "findLeaves(nodeIndex, query, dataset, &locDone, &locPtr, heapDist, heapId, nNodes);\n"
+    "findLeaves(nodeIndex, query, dataset, &locDone, &locPtr, heapDist, heapId, &leafCount, nNodes);\n"
 
     // After inserting, sorting, and checking leaves, the results are in the lower part of the heap
     "storeResult(resultDistArr, resultIdArr, heapDist, heapId, queryOff);\n"
@@ -780,7 +782,11 @@ protected:
 
     // Sort to mix the new nodes into the correct positions in the heap
     "sortHeap(heapDist, heapId);\n"
+    "barrier(CLK_LOCAL_MEM_FENCE);\n"
+
+    "int iteration = 0;\n"  // Track iterations
     "do {\n"
+        "iteration++;\n"
         // Use the closest parent nodes to discover additional nodes
         "findNewNodeDist(nodeIndex, nodePivots, nodeVariance, query, heapDist, heapId, nNodes);\n"
 
@@ -795,7 +801,10 @@ protected:
 
         // While there is a pointer to a parent node in the heap, keep going
         "checkDone((heapId[get_local_id(0)] >= nNodes), locDone);\n"
+        "barrier(CLK_LOCAL_MEM_FENCE);\n"
+
     "} while (!(*locDone));\n"
+    "barrier(CLK_LOCAL_MEM_FENCE);\n"
 "}\n"
 
 // The bottom half of the heap are pointers to groups of leaves. We have one thread per leaf
@@ -807,6 +816,7 @@ protected:
                 "const __global ELEMENT_TYPE *dataset,\n"
                 "__local int *locDone, __local int *locPtr,\n"
                 "__local DISTANCE_TYPE *heapDist, __local int *heapId,\n"
+                "__local int *leafCount,\n"
                 "const int nNodes)\n"
 "{\n"
     // Store pointer to list before init local mem

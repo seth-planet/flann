@@ -15,7 +15,15 @@ test/flann_simple_test
 test/flann_uint_autotune.py
 build
 build_win
+build-*/
 dist/
 flann.kdev4
 TODO
 
+# Development artifacts
+datasets/
+Testing/
+*.log
+benchmark_results/
+cuda_migration_plan/
+test_saved_index.idx
