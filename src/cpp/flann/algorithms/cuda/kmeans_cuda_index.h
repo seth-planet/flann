@@ -62,7 +62,8 @@ bool launch_kmeans_search(
     int knn,
     int max_checks,
     dim3 grid,
-    dim3 block);
+    dim3 block,
+    float cb_index);
 #endif
 
 /**
@@ -515,7 +516,8 @@ protected:
                 knn,
                 max_checks,
                 grid,
-                block
+                block,
+                this->cb_index_
             );
         } else {
             throw FLANNException(
@@ -644,7 +646,7 @@ protected:
             gpu_node.pivot_index = flat_nodes.size();  // Index of this node
             gpu_node.level = current_level;
             gpu_node.radius = node->radius;
-            gpu_node.padding = 0;
+            gpu_node.variance = node->variance;
 
             // Handle children
             if (node->childs.empty()) {

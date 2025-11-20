@@ -417,7 +417,7 @@ This fork includes CUDA-accelerated implementations of nearest neighbor search a
 
 **Performance Characteristics:**
 - Best for large datasets (>10K points) and high dimensions (>32D)
-- Precision: 96.8% (Hierarchical), 70-97% (K-Means)
+- Precision: 96.8% (Hierarchical), 79-97% (K-Means)
 - Test coverage: 19/19 tests passing
 - Memory: Zero leaks confirmed with compute-sanitizer
 
@@ -541,7 +541,7 @@ index.knnSearch(queries, indices, distances, 5,
 K-Means (SIFT 128D, NVIDIA GPU):
 - 10K points: ~0.68s build, ~0.014s search (1K queries)
 - 100K points: ~11.5s build, ~0.019s search (1K queries)
-- Precision: 70-97% depending on parameters
+- Precision: 79-97% depending on parameters
 
 Hierarchical (Brief 256-bit, NVIDIA GPU):
 - 100K points: ~0.56s build, ~0.03s search (1K queries)
@@ -604,15 +604,16 @@ Recommendation: Use k that is multiple of 4 for best performance.
 **K-Means CUDA (11/11 tests PASSED):**
 ```
 SIFT10K Dataset:
-- TestSearch:          71.4% precision  ✓
+- TestSearch:          87.5% precision  ✓
 - TestSearch2:         97.0% precision  ✓
-- TestAddIncremental:  75.5% precision  ✓
-- TestCopy:            71.4% precision  ✓
+- TestAddIncremental:  88.0% precision  ✓
+- TestCopy:            87.5% precision  ✓
 - TestSave/Remove:     PASSED           ✓
 
 SIFT100K Dataset:
-- TestSearch:          70.7% precision  ✓
+- TestSearch:          82.5% precision  ✓
 - TestAddIncremental:  81.1% precision  ✓
+- TestAddIncremental2: 79.1% precision  ✓
 ```
 
 **Hierarchical CUDA (8/8 tests PASSED):**
@@ -695,7 +696,7 @@ sudo apt-get install nvidia-cuda-toolkit
 | Feature | CUDA | OpenCL |
 |---------|------|--------|
 | **Hardware Support** | NVIDIA only | Multi-vendor (NVIDIA, AMD, Intel) |
-| **K-Means Precision** | 70-97% | 92-98% |
+| **K-Means Precision** | 79-97% | 92-98% |
 | **Hierarchical Precision** | 96.8% | 97.2% |
 | **Test Coverage** | 19/19 tests | 19/19 tests |
 | **Memory Leaks** | 0 (verified) | 0 (verified) |

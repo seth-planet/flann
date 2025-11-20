@@ -28,7 +28,7 @@ struct alignas(16) KMeansNodeGPU {
     uint16_t child_count; // Number of children (0 for leaves)
     uint16_t level;       // Tree depth (0 = root)
     float radius;         // Bounding sphere radius
-    int padding;          // Pad to 16 bytes for alignment
+    float variance;       // Cluster variance (for CB_INDEX heuristic)
 };
 
 } // namespace cuda

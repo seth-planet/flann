@@ -83,6 +83,7 @@ __device__ inline bool is_too_far(
  *
  * For an internal node, computes distances to all children, finds the closest,
  * and pushes the remaining children onto the priority queue for later exploration.
+ * Uses CB_INDEX variance adjustment to prioritize tighter clusters.
  *
  * @param tree_nodes Flat array of tree nodes
  * @param tree_pivots Flat array of pivot coordinates
@@ -92,6 +93,8 @@ __device__ inline bool is_too_far(
  * @param pq_nodes Priority queue node indices
  * @param pq_size Current PQ size
  * @param dim Vector dimension
+ * @param max_pq_size Maximum PQ size
+ * @param cb_index CB_INDEX parameter for variance adjustment
  * @return Index of closest child node
  */
 __device__ inline int explore_node_branches(
@@ -103,7 +106,8 @@ __device__ inline int explore_node_branches(
     int* __restrict__ pq_nodes,
     int& pq_size,
     int dim,
-    int max_pq_size
+    int max_pq_size,
+    float cb_index
 ) {
     const KMeansNodeGPU& node = tree_nodes[node_index];
     int child_start = node.child_start;
@@ -134,17 +138,22 @@ __device__ inline int explore_node_branches(
         if (i == best_idx) continue;
 
         int child_idx = child_start + i;
+        const KMeansNodeGPU& child_node = tree_nodes[child_idx];
+
+        // Apply CB_INDEX variance adjustment to prioritize tighter clusters
+        // This matches OpenCL implementation (nn_opencl_index.h:1247)
         float dist = dist_arr[i];
+        float adjusted_dist = dist - cb_index * child_node.variance;
 
         // Insert into PQ if not full, or if better than worst
         if (pq_size < max_pq_size) {
-            pq_dists[pq_size] = dist;
+            pq_dists[pq_size] = adjusted_dist;
             pq_nodes[pq_size] = child_idx;
             sift_up_min_heap(pq_dists, pq_nodes, pq_size);
             pq_size++;
-        } else if (dist < pq_dists[pq_size - 1]) {
+        } else if (adjusted_dist < pq_dists[pq_size - 1]) {
             // Replace worst element
-            pq_dists[pq_size - 1] = dist;
+            pq_dists[pq_size - 1] = adjusted_dist;
             pq_nodes[pq_size - 1] = child_idx;
             // Restore min-heap property (sift up from end)
             int pos = pq_size - 1;
@@ -207,7 +216,8 @@ __device__ inline int find_nearest_neighbor(
     int* __restrict__ pq_nodes,
     int& pq_size,
     int dim,
-    int max_pq_size
+    int max_pq_size,
+    float cb_index
 ) {
     const KMeansNodeGPU& node = tree_nodes[node_index];
 
@@ -241,7 +251,8 @@ __device__ inline int find_nearest_neighbor(
     // Internal node: explore branches
     return explore_node_branches(
         tree_nodes, tree_pivots, node_index, query,
-        pq_dists, pq_nodes, pq_size, dim, max_pq_size
+        pq_dists, pq_nodes, pq_size, dim, max_pq_size,
+        cb_index
     );
 }
 
@@ -286,7 +297,8 @@ __global__ void kmeans_search_kernel(
     float* __restrict__ result_distances,
     int num_queries,
     int dim,
-    int num_nodes
+    int num_nodes,
+    float cb_index
 ) {
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -319,7 +331,8 @@ __global__ void kmeans_search_kernel(
             result_dists, result_ids,
             checks, MAX_CHECKS,
             pq_dists, pq_nodes, pq_size,
-            dim, MAX_PQ_SIZE
+            dim, MAX_PQ_SIZE,
+            cb_index
         );
 
         // If branch ended, pop next node from priority queue
@@ -398,7 +411,8 @@ bool launch_kmeans_search(
     int k,
     int max_checks,
     dim3 grid,
-    dim3 block
+    dim3 block,
+    float cb_index
 ) {
     // Dispatch based on k and max_checks
     // Common configurations: k ∈ {1, 5, 10, 20, 50, 100}, max_checks ∈ {32, 64, 128, 256}
@@ -408,112 +422,112 @@ bool launch_kmeans_search(
             kmeans_search_kernel<1, 32><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         } else if (max_checks <= 64) {
             kmeans_search_kernel<1, 64><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         } else if (max_checks <= 128) {
             kmeans_search_kernel<1, 128><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         } else {
             kmeans_search_kernel<1, 256><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         }
     } else if (k == 5) {
         if (max_checks <= 32) {
             kmeans_search_kernel<5, 32><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         } else if (max_checks <= 64) {
             kmeans_search_kernel<5, 64><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         } else if (max_checks <= 128) {
             kmeans_search_kernel<5, 128><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         } else {
             kmeans_search_kernel<5, 256><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         }
     } else if (k == 10) {
         if (max_checks <= 32) {
             kmeans_search_kernel<10, 32><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         } else if (max_checks <= 64) {
             kmeans_search_kernel<10, 64><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         } else if (max_checks <= 128) {
             kmeans_search_kernel<10, 128><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         } else {
             kmeans_search_kernel<10, 256><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         }
     } else if (k == 20) {
         if (max_checks <= 32) {
             kmeans_search_kernel<20, 32><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         } else if (max_checks <= 64) {
             kmeans_search_kernel<20, 64><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         } else if (max_checks <= 128) {
             kmeans_search_kernel<20, 128><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         } else {
             kmeans_search_kernel<20, 256><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         }
     } else if (k == 50) {
         if (max_checks <= 128) {
             kmeans_search_kernel<50, 128><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         } else {
             kmeans_search_kernel<50, 256><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         }
     } else if (k == 100) {
         if (max_checks <= 128) {
             kmeans_search_kernel<100, 128><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         } else {
             kmeans_search_kernel<100, 256><<<grid, block>>>(
                 dataset, queries, tree_nodes, tree_pivots, dataset_indices,
                 result_indices, result_distances,
-                num_queries, dim, num_nodes);
+                num_queries, dim, num_nodes, cb_index);
         }
     } else {
         // Unsupported k value

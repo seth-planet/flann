@@ -566,7 +566,7 @@ protected:
                 gpu_node.child_start = -(leaf_offset + 1);
                 gpu_node.pivot_index = -1;
                 gpu_node.radius = 0.0f;
-                gpu_node.padding = 0;
+                gpu_node.variance = 0.0f;
 
                 for (size_t i = 0; i < node->points.size(); ++i) {
                     size_t index = node->points[i].index;
@@ -585,7 +585,7 @@ protected:
                 gpu_node.child_start = next_available_slot;  // Children start here
                 gpu_node.child_count = static_cast<uint16_t>(node->childs.size());
                 gpu_node.radius = 0.0f;
-                gpu_node.padding = 0;
+                gpu_node.variance = 0.0f;
 
                 // Enqueue children at next available slots
                 for (size_t i = 0; i < node->childs.size(); ++i) {
