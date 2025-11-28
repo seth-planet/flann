@@ -357,6 +357,36 @@ private:
     size_t size_bytes_;
 };
 
+/**
+ * @brief Query CUDA device capabilities for cooperative kernel
+ *
+ * Determines optimal LOC_SIZE (threads per block) for cooperative kernels
+ * based on device capabilities:
+ * - Warp size (32 for NVIDIA)
+ * - Max threads per block
+ * - Power of 2 for bitonic sort efficiency
+ *
+ * @param device_id CUDA device ID (default: 0)
+ * @return LOC_SIZE value (32, 64, or 128)
+ */
+inline int getCUDALocSize(int device_id = 0)
+{
+    cudaDeviceProp prop;
+    CUDA_CHECK(cudaGetDeviceProperties(&prop, device_id));
+
+    int warp_size = prop.warpSize;  // 32 for NVIDIA
+    int max_threads = prop.maxThreadsPerBlock;  // Typically 1024
+
+    // Prefer 128 for good occupancy, fall back to 64 or 32
+    if (max_threads >= 128) {
+        return 128;
+    } else if (max_threads >= 64) {
+        return 64;
+    } else {
+        return 32;
+    }
+}
+
 } // namespace cuda
 } // namespace flann
 

@@ -43,13 +43,47 @@
 
 #define FLANN_USE_CUDA
 
-// Include the kernel implementation
+// Include the kernel implementations
 #include "kernels/kmeans_search_kernel.cuh"
+#include "kernels/kmeans_search_cooperative.cuh"
 
 // This .cu file exists purely to trigger CUDA compilation of the kernels.
 // The launch_kmeans_search() function is inline in the .cuh header and
 // will be instantiated when this file is compiled by nvcc.
 
-// No additional code needed - the kernel templates are instantiated
-// on-demand when launch_kmeans_search() calls them with specific k and
-// max_checks values.
+// No additional code needed for single-threaded kernel - the templates are
+// instantiated on-demand when launch_kmeans_search() calls them with specific
+// k and max_checks values.
+
+// Explicit template instantiations for cooperative kernel launcher
+// Required because the launcher is called from host code via template dispatch
+namespace flann {
+namespace cuda {
+
+// Instantiate for common k values (OpenCL parity: unified nodeIndex array)
+template bool launch_kmeans_search_cooperative<1>(
+    const float*, const float*, const int*, const float*, const float*,
+    int*, float*, size_t, size_t, size_t, int, int, int, float);
+
+template bool launch_kmeans_search_cooperative<5>(
+    const float*, const float*, const int*, const float*, const float*,
+    int*, float*, size_t, size_t, size_t, int, int, int, float);
+
+template bool launch_kmeans_search_cooperative<10>(
+    const float*, const float*, const int*, const float*, const float*,
+    int*, float*, size_t, size_t, size_t, int, int, int, float);
+
+template bool launch_kmeans_search_cooperative<20>(
+    const float*, const float*, const int*, const float*, const float*,
+    int*, float*, size_t, size_t, size_t, int, int, int, float);
+
+template bool launch_kmeans_search_cooperative<50>(
+    const float*, const float*, const int*, const float*, const float*,
+    int*, float*, size_t, size_t, size_t, int, int, int, float);
+
+template bool launch_kmeans_search_cooperative<100>(
+    const float*, const float*, const int*, const float*, const float*,
+    int*, float*, size_t, size_t, size_t, int, int, int, float);
+
+} // namespace cuda
+} // namespace flann

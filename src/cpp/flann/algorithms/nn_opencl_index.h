@@ -804,7 +804,12 @@ protected:
         "barrier(CLK_LOCAL_MEM_FENCE);\n"
 
     "} while (!(*locDone));\n"
-    "barrier(CLK_LOCAL_MEM_FENCE);\n"
+    "\n"
+    "    // Debug: Report iteration count for first query\n"
+    "    if (get_group_id(0) == 0 && get_local_id(0) == 0) {\n"
+    "        printf(\"[OpenCL K-Means] Tree descent iterations: %d\\n\", iteration);\n"
+    "    }\n"
+    "    barrier(CLK_LOCAL_MEM_FENCE);\n"
 "}\n"
 
 // The bottom half of the heap are pointers to groups of leaves. We have one thread per leaf

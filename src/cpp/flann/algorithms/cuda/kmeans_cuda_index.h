@@ -46,8 +46,9 @@ namespace cuda {
 // Only include kernel headers when compiling with nvcc
 #ifdef __CUDACC__
 #include "flann/algorithms/cuda/kernels/kmeans_search_kernel.cuh"
+#include "flann/algorithms/cuda/kernels/kmeans_search_cooperative.cuh"
 #else
-// Forward declare kernel launch function for non-CUDA compilation
+// Forward declare kernel launch functions for non-CUDA compilation
 bool launch_kmeans_search(
     const float* dataset,
     const float* queries,
@@ -61,8 +62,26 @@ bool launch_kmeans_search(
     size_t num_nodes,
     int knn,
     int max_checks,
+    int pq_size,
     dim3 grid,
     dim3 block,
+    float cb_index);
+
+template<int K>
+bool launch_kmeans_search_cooperative(
+    const float* dataset,
+    const float* queries,
+    const int* node_index,
+    const float* node_pivots,
+    const float* node_variance,
+    int* result_indices,
+    float* result_distances,
+    size_t num_queries,
+    size_t dim,
+    size_t num_nodes,
+    int heap_size,
+    int loc_size,
+    int branching,
     float cb_index);
 #endif
 
@@ -146,6 +165,7 @@ public:
           gpu_initialized_(false),
           gpu_search_ready_(false),
           num_nodes_(0),
+          leaf_count_(0),
           padded_veclen_(0)
     {
     }
@@ -164,6 +184,7 @@ public:
           gpu_initialized_(false),
           gpu_search_ready_(false),
           num_nodes_(0),
+          leaf_count_(0),
           padded_veclen_(0)
     {
         // CPU tree is copied via BaseClass copy constructor
@@ -181,6 +202,7 @@ public:
           gpu_initialized_(false),
           gpu_search_ready_(false),
           num_nodes_(0),
+          leaf_count_(0),
           padded_veclen_(0)
     {
     }
@@ -499,34 +521,171 @@ protected:
         dim3 grid(num_blocks);
         dim3 block(threads_per_block);
 
+        // Calculate dynamic heap size based on tree structure (OpenCL parity)
+        // heapSize = max(getAvgNodesNeeded(maxChecks), getCUDAknn(knn))
+        int heap_size = calculateHeapSize(knn, max_checks);
+
+        // Query device capabilities for cooperative kernel
+        int loc_size = getCUDALocSize(0);
+
+        // Determine which kernel to use
+        // Cooperative kernel requires heap_size <= loc_size AND branching=32 or 64
+        bool heap_ok = (heap_size <= loc_size);
+        bool branch_ok = (this->branching_ == 32 || this->branching_ == 64);
+        bool use_cooperative = heap_ok && branch_ok;
+
+        std::cout << "[CUDA K-Means] Kernel selection:\n"
+                  << "  branching=" << this->branching_
+                  << ", heap_size=" << heap_size
+                  << ", loc_size=" << loc_size << "\n"
+                  << "  heap_ok=" << (heap_ok ? "true" : "false")
+                  << ", branch_ok=" << (branch_ok ? "true" : "false")
+                  << ", use_cooperative=" << (use_cooperative ? "true" : "false") << "\n"
+                  << "  k=" << knn
+                  << ", max_checks=" << max_checks
+                  << ", avgNodes=" << getAvgNodesNeeded(max_checks)
+                  << ", cudaKnn=" << getCUDAknn(knn) << "\n";
+
         // Launch kernel (only works with float, but must compile for all types)
-        bool success;
-        if (std::is_same<ElementType, float>::value) {
-            success = launch_kmeans_search(
-                (const float*)dataset_gpu_.get(),
-                (const float*)queries_gpu.get(),
-                tree_nodes_gpu_.get(),
-                (const float*)tree_pivots_gpu_.get(),
-                dataset_indices_gpu_.get(),
-                indices_gpu.get(),
-                (float*)dists_gpu.get(),
-                num_queries,
-                padded_veclen_,
-                num_nodes_,
-                knn,
-                max_checks,
-                grid,
-                block,
-                this->cb_index_
-            );
-        } else {
+        bool success = false;
+        if (!std::is_same<ElementType, float>::value) {
             throw FLANNException(
                 "K-Means CUDA kernel only supports float element type. "
                 "This should have been caught earlier - please report this bug.");
         }
 
+        if (use_cooperative) {
+            // Use cooperative kernel (LOC_SIZE threads per query)
+            std::cout << "[CUDA K-Means] Using cooperative kernel (LOC_SIZE=" << loc_size << ")\n";
+
+            // Dispatch based on k value (template parameter)
+            if (knn == 1) {
+                success = launch_kmeans_search_cooperative<1>(
+                    (const float*)dataset_gpu_.get(),
+                    (const float*)queries_gpu.get(),
+                    node_index_gpu_.get(),
+                    (const float*)tree_pivots_gpu_.get(),
+                    node_variance_gpu_.get(),
+                    indices_gpu.get(),
+                    (float*)dists_gpu.get(),
+                    num_queries,
+                    padded_veclen_,
+                    num_nodes_,
+                    heap_size,
+                    loc_size,
+                    this->branching_,
+                    this->cb_index_
+                );
+            } else if (knn == 5) {
+                success = launch_kmeans_search_cooperative<5>(
+                    (const float*)dataset_gpu_.get(),
+                    (const float*)queries_gpu.get(),
+                    node_index_gpu_.get(),
+                    (const float*)tree_pivots_gpu_.get(),
+                    node_variance_gpu_.get(),
+                    indices_gpu.get(),
+                    (float*)dists_gpu.get(),
+                    num_queries,
+                    padded_veclen_,
+                    num_nodes_,
+                    heap_size,
+                    loc_size,
+                    this->branching_,
+                    this->cb_index_
+                );
+            } else if (knn == 10) {
+                success = launch_kmeans_search_cooperative<10>(
+                    (const float*)dataset_gpu_.get(),
+                    (const float*)queries_gpu.get(),
+                    node_index_gpu_.get(),
+                    (const float*)tree_pivots_gpu_.get(),
+                    node_variance_gpu_.get(),
+                    indices_gpu.get(),
+                    (float*)dists_gpu.get(),
+                    num_queries,
+                    padded_veclen_,
+                    num_nodes_,
+                    heap_size,
+                    loc_size,
+                    this->branching_,
+                    this->cb_index_
+                );
+            } else if (knn == 20) {
+                success = launch_kmeans_search_cooperative<20>(
+                    (const float*)dataset_gpu_.get(),
+                    (const float*)queries_gpu.get(),
+                    node_index_gpu_.get(),
+                    (const float*)tree_pivots_gpu_.get(),
+                    node_variance_gpu_.get(),
+                    indices_gpu.get(),
+                    (float*)dists_gpu.get(),
+                    num_queries,
+                    padded_veclen_,
+                    num_nodes_,
+                    heap_size,
+                    loc_size,
+                    this->branching_,
+                    this->cb_index_
+                );
+            } else if (knn == 50) {
+                success = launch_kmeans_search_cooperative<50>(
+                    (const float*)dataset_gpu_.get(),
+                    (const float*)queries_gpu.get(),
+                    node_index_gpu_.get(),
+                    (const float*)tree_pivots_gpu_.get(),
+                    node_variance_gpu_.get(),
+                    indices_gpu.get(),
+                    (float*)dists_gpu.get(),
+                    num_queries,
+                    padded_veclen_,
+                    num_nodes_,
+                    heap_size,
+                    loc_size,
+                    this->branching_,
+                    this->cb_index_
+                );
+            } else if (knn == 100) {
+                success = launch_kmeans_search_cooperative<100>(
+                    (const float*)dataset_gpu_.get(),
+                    (const float*)queries_gpu.get(),
+                    node_index_gpu_.get(),
+                    (const float*)tree_pivots_gpu_.get(),
+                    node_variance_gpu_.get(),
+                    indices_gpu.get(),
+                    (float*)dists_gpu.get(),
+                    num_queries,
+                    padded_veclen_,
+                    num_nodes_,
+                    heap_size,
+                    loc_size,
+                    this->branching_,
+                    this->cb_index_
+                );
+            } else {
+                // Unsupported k for cooperative kernel, fall back to single-threaded
+                std::cout << "[CUDA K-Means] Unsupported k=" << knn << " for cooperative kernel, "
+                          << "falling back to single-threaded\n";
+                use_cooperative = false;
+            }
+        }
+
+        if (!use_cooperative) {
+            // Single-threaded kernel disabled during OpenCL parity transformation
+            // (requires dataset_indices which has been removed)
+            throw FLANNException("Unsupported k value for OpenCL parity cooperative kernel. "
+                               "Supported k values: 1, 5, 10, 20, 50, 100");
+        }
+
         if (!success) {
-            throw FLANNException("Unsupported k value for GPU search");
+            cudaError_t err = cudaGetLastError();
+            std::cerr << "[CUDA K-Means] Kernel launch failed! CUDA error: "
+                      << cudaGetErrorString(err) << " (code: " << err << ")\n";
+            std::cerr << "[CUDA K-Means] Parameters: heap_size=" << heap_size
+                      << ", loc_size=" << loc_size
+                      << ", branching=" << this->branching_
+                      << ", dim=" << padded_veclen_
+                      << ", k=" << knn << "\n";
+            throw FLANNException("Failed to launch K-Means CUDA kernel");
         }
 
         // Check for kernel errors
@@ -556,9 +715,15 @@ protected:
      */
     void freeGPUMemory()
     {
+        // Old hierarchical structures (TODO: Remove after full conversion)
         tree_nodes_gpu_ = CUDABuffer<KMeansNodeGPU>();
+
+        // Flat array structures (OpenCL-style with unified nodeIndex)
+        node_index_gpu_ = CUDABuffer<int>();
+        node_variance_gpu_ = CUDABuffer<float>();
         tree_pivots_gpu_ = CUDABuffer<ElementType>();
         dataset_gpu_ = CUDABuffer<ElementType>();
+
         gpu_initialized_ = false;
         gpu_search_ready_ = false;
         num_nodes_ = 0;
@@ -585,26 +750,33 @@ protected:
         // Calculate padded veclen (round up to multiple of 4 for float4 loads)
         padded_veclen_ = ((this->veclen_ + 3) / 4) * 4;
 
-        // Flatten tree structure
-        std::vector<KMeansNodeGPU> flat_nodes;
-        std::vector<ElementType> flat_pivots;
-        std::vector<int> dataset_indices;
-        flattenTree(this->root_, flat_nodes, flat_pivots, dataset_indices);
+        // Count leaf size (sum of dataset points across all leaf nodes)
+        // This matches OpenCL's cl_num_leaves_ calculation
+        leaf_count_ = 0;
+        countLeafSize(this->root_, &leaf_count_);
 
-        // Upload tree nodes
-        num_nodes_ = flat_nodes.size();
-        tree_nodes_gpu_.resize(num_nodes_);
-        tree_nodes_gpu_.upload(flat_nodes.data(), num_nodes_);
+        // Build flat array tree with OpenCL-style arithmetic child layout
+        std::vector<int> node_index;
+        std::vector<ElementType> flat_pivots;
+        std::vector<float> node_variance;
+        buildFlatArrayTree(this->root_, node_index, flat_pivots, node_variance);
+
+        // Get node count from variance array (NOT unified nodeIndex size)
+        num_nodes_ = node_variance.size();
+
+        // Upload unified nodeIndex array (contains metadata + leaf data)
+        size_t unified_size = node_index.size();
+        node_index_gpu_.resize(unified_size);
+        node_index_gpu_.upload(node_index.data(), unified_size);
+
+        // Upload node variance array (separate from pivots)
+        node_variance_gpu_.resize(num_nodes_);
+        node_variance_gpu_.upload(node_variance.data(), num_nodes_);
 
         // Upload pivots (with padding)
         size_t pivots_size = num_nodes_ * padded_veclen_;
         tree_pivots_gpu_.resize(pivots_size);
         tree_pivots_gpu_.upload(flat_pivots.data(), pivots_size);
-
-        // Upload dataset indices for leaf nodes
-        size_t num_indices = dataset_indices.size();
-        dataset_indices_gpu_.resize(num_indices);
-        dataset_indices_gpu_.upload(dataset_indices.data(), num_indices);
 
         // Upload dataset (with padding)
         uploadDataset();
@@ -613,7 +785,171 @@ protected:
     }
 
     /**
-     * @brief Flatten tree to breadth-first arrays
+     * @brief Build flat array tree with OpenCL-style arithmetic child layout
+     *
+     * Creates a flat array tree where parent P at level L has children at indices:
+     * P*branching, P*branching+1, ..., P*branching+branching-1
+     *
+     * This enables O(1) child computation: child = parent + offset (no pointer chasing)
+     *
+     * @param root Root node of CPU tree
+     * @param[out] node_index Output nodeIndex array (internal: node_id, leaf: >=num_nodes)
+     * @param[out] flat_pivots Output flat pivot array (padded to padded_veclen_)
+     * @param[out] node_variance Output variance array
+     * @param[out] node_leaf_count Output leaf point counts (0 for internal nodes, >0 for leaves)
+     * @param[out] dataset_indices Output dataset indices for all leaves
+     */
+    void buildFlatArrayTree(
+        Node* root,
+        std::vector<int>& node_index,
+        std::vector<ElementType>& flat_pivots,
+        std::vector<float>& node_variance) const
+    {
+        if (!root) return;
+
+        node_index.clear();
+        flat_pivots.clear();
+        node_variance.clear();
+
+        // Map CPU nodes to their target flat array indices
+        std::map<Node*, int> node_to_index;
+
+        // Queue: {CPU_node, target_flat_array_index}
+        std::queue<std::pair<Node*, int>> to_process;
+        to_process.push({root, 0});  // Root at index 0
+        node_to_index[root] = 0;
+
+        // First pass: Assign flat array indices with arithmetic layout
+        int max_index = 0;
+        int num_leaves = 0;
+        while (!to_process.empty()) {
+            auto [node, node_idx] = to_process.front();
+            to_process.pop();
+
+            max_index = std::max(max_index, node_idx);
+
+            if (node->childs.empty()) {
+                num_leaves++;
+            } else {
+                // Assign children at arithmetic offsets
+                for (size_t c = 0; c < node->childs.size(); ++c) {
+                    int child_idx = node_idx * this->branching_ + 1 + c;
+                    node_to_index[node->childs[c]] = child_idx;
+                    to_process.push({node->childs[c], child_idx});
+                }
+            }
+        }
+
+        // Calculate total leaf points for unified array size
+        size_t num_nodes = max_index + 1;
+        int total_leaf_points = 0;
+        std::queue<Node*> count_queue;
+        count_queue.push(root);
+        while (!count_queue.empty()) {
+            Node* node = count_queue.front();
+            count_queue.pop();
+            if (node->childs.empty()) {
+                for (size_t i = 0; i < node->points.size(); ++i) {
+                    if (!this->removed_ || !this->removed_points_.test(node->points[i].index)) {
+                        total_leaf_points++;
+                    }
+                }
+            } else {
+                for (auto* child : node->childs) {
+                    count_queue.push(child);
+                }
+            }
+        }
+
+        // Allocate UNIFIED nodeIndex array: node_metadata + leaf_counts + leaf_data
+        size_t unified_size = num_nodes + num_leaves + total_leaf_points;
+        node_index.resize(unified_size, -1);
+        flat_pivots.resize(num_nodes * padded_veclen_, 0);
+        node_variance.resize(num_nodes, 0.0f);
+
+        // Second pass: Fill arrays with actual data
+        int data_region_offset = num_nodes;  // Data region starts after node metadata
+        std::queue<Node*> fill_queue;
+        fill_queue.push(root);
+
+        while (!fill_queue.empty()) {
+            Node* node = fill_queue.front();
+            fill_queue.pop();
+
+            int node_idx = node_to_index[node];
+
+            // Store pivot (with padding)
+            for (size_t d = 0; d < padded_veclen_; ++d) {
+                if (d < this->veclen_) {
+                    flat_pivots[node_idx * padded_veclen_ + d] = node->pivot[d];
+                } else {
+                    flat_pivots[node_idx * padded_veclen_ + d] = 0;  // Pad
+                }
+            }
+
+            // Store variance
+            node_variance[node_idx] = node->variance;
+
+            // Handle internal vs leaf nodes
+            if (node->childs.empty()) {
+                // LEAF: Store pointer to data region in unified nodeIndex
+                node_index[node_idx] = data_region_offset;
+
+                // Count valid (non-removed) points for this leaf
+                int leaf_point_count = 0;
+                for (size_t i = 0; i < node->points.size(); ++i) {
+                    if (!this->removed_ || !this->removed_points_.test(node->points[i].index)) {
+                        leaf_point_count++;
+                    }
+                }
+
+                // Store count in data region
+                node_index[data_region_offset] = leaf_point_count;
+                data_region_offset++;
+
+                // Store dataset IDs in data region
+                for (size_t i = 0; i < node->points.size(); ++i) {
+                    size_t index = node->points[i].index;
+                    if (!this->removed_ || !this->removed_points_.test(index)) {
+                        node_index[data_region_offset] = static_cast<int>(index);
+                        data_region_offset++;
+                    }
+                }
+            } else {
+                // INTERNAL: nodeIndex[i] = first_child_index (OpenCL-style base pointer)
+                // Children are at: node_idx*branching+1, node_idx*branching+2, ..., node_idx*branching+branching
+                int first_child_idx = node_idx * this->branching_ + 1;
+                node_index[node_idx] = first_child_idx;
+
+                // Enqueue children for processing
+                for (size_t c = 0; c < node->childs.size(); ++c) {
+                    fill_queue.push(node->childs[c]);
+                }
+            }
+        }
+
+        // Debug output
+        std::cout << "[CUDA K-Means] Flat array tree built:\n"
+                  << "  Total nodes: " << num_nodes << "\n"
+                  << "  Unified array size: " << unified_size << "\n"
+                  << "  Branching factor: " << this->branching_ << "\n";
+
+        // Verify arithmetic layout (optional debug check)
+        for (const auto& [node, idx] : node_to_index) {
+            if (!node->childs.empty() && node->childs.size() > 0) {
+                int first_child_expected = idx * this->branching_ + 1;  // +1 offset
+                int first_child_actual = node_to_index[node->childs[0]];
+                if (first_child_expected != first_child_actual) {
+                    std::cerr << "[WARNING] Node " << idx << " arithmetic layout mismatch: "
+                              << "expected child at " << first_child_expected
+                              << ", got " << first_child_actual << "\n";
+                }
+            }
+        }
+    }
+
+    /**
+     * @brief Flatten tree to breadth-first arrays (OLD - will be replaced)
      *
      * @param root Root node
      * @param[out] flat_nodes Output flat node array
@@ -720,18 +1056,112 @@ protected:
         dataset_gpu_.upload(padded_data.data(), dataset_size);
     }
 
+protected:
+    /**
+     * @brief Calculate average nodes needed for given max checks
+     *
+     * Matches OpenCL implementation (kmeans_opencl_index.h:850-854)
+     * Used for dynamic heap size calculation.
+     *
+     * @param maxChecks Maximum number of distance computations allowed
+     * @return Estimated number of tree nodes to explore
+     */
+    /**
+     * @brief Recursively count total dataset points across all leaf nodes
+     */
+    void countLeafSize(typename BaseClass::Node* node, size_t* leafCount) const
+    {
+        if (!node) return;
+
+        if (node->childs.empty()) {
+            *leafCount += node->size;
+        } else {
+            for (size_t i = 0; i < node->childs.size(); ++i) {
+                countLeafSize(node->childs[i], leafCount);
+            }
+        }
+    }
+
+    /**
+     * @brief Recursively count number of tree leaf nodes
+     */
+    void countTreeLeafNodes(typename BaseClass::Node* node, size_t* count) const
+    {
+        if (!node) return;
+
+        if (node->childs.empty()) {
+            (*count)++;
+        } else {
+            for (size_t i = 0; i < node->childs.size(); ++i) {
+                countTreeLeafNodes(node->childs[i], count);
+            }
+        }
+    }
+
+    int getAvgNodesNeeded(int maxChecks) const
+    {
+        if (num_nodes_ == 0 || leaf_count_ == 0) {
+            return maxChecks;
+        }
+
+        // Count tree leaf nodes (not dataset points)
+        size_t tree_leaf_count = 0;
+        countTreeLeafNodes(this->root_, &tree_leaf_count);
+
+        // Formula: maxChecks * (tree_leaf_nodes) / (dataset_points)
+        // Matches OpenCL: maxChecks * (cl_num_nodes_ - cl_num_parents_) / cl_num_leaves_
+        return maxChecks * tree_leaf_count / leaf_count_;
+    }
+
+    /**
+     * @brief Calculate CL-style k-NN heap size
+     *
+     * Matches OpenCL implementation (nn_opencl_index.h:240-248)
+     * Rounds up to multiple of 4, plus 1 for vectorization alignment.
+     *
+     * @param knn Number of nearest neighbors
+     * @return Heap size suitable for k-NN search
+     */
+    int getCUDAknn(size_t knn) const
+    {
+        // Round up to multiple of 4, plus 1
+        // Ensures heap size is suitable for vectorization
+        return 4 * ((knn + 3) / 4) + 1;
+    }
+
+    /**
+     * @brief Calculate initial heap size for given parameters
+     *
+     * Matches OpenCL logic (kmeans_opencl_index.h:335)
+     * Used for kernel selection and PQ size determination.
+     *
+     * @param knn Number of nearest neighbors
+     * @param maxChecks Maximum distance computations
+     * @return Calculated heap size
+     */
+    int calculateHeapSize(size_t knn, int maxChecks) const
+    {
+        int avgNodes = getAvgNodesNeeded(maxChecks);
+        int clKnn = getCUDAknn(knn);
+        return std::max(avgNodes, clKnn);
+    }
+
 private:
     // GPU state (mutable = implementation detail, not logical state)
     mutable bool gpu_initialized_;
     mutable bool gpu_search_ready_;
     mutable size_t num_nodes_;
+    mutable size_t leaf_count_;      // Number of leaf nodes (for heap size calculation)
     mutable size_t padded_veclen_;
 
     // GPU buffers (RAII - automatic cleanup, mutable for const search methods)
-    mutable CUDABuffer<KMeansNodeGPU> tree_nodes_gpu_;
+    mutable CUDABuffer<KMeansNodeGPU> tree_nodes_gpu_;  // TODO: Remove after flat array conversion
     mutable CUDABuffer<ElementType> tree_pivots_gpu_;
     mutable CUDABuffer<ElementType> dataset_gpu_;
-    mutable CUDABuffer<int> dataset_indices_gpu_;  // Leaf node dataset point indices
+
+    // OpenCL-style flat array architecture with unified nodeIndex
+    mutable CUDABuffer<int> node_index_gpu_;        // Unified array: metadata + leaf data
+    mutable CUDABuffer<float> node_variance_gpu_;   // Separate variance array
 };
 
 } // namespace cuda
