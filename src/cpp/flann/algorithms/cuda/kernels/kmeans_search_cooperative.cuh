@@ -340,10 +340,12 @@ __device__ void find_nodes_cooperative(
     init_heap<LOC_SIZE>(shared, num_nodes);
     __syncthreads();
 
-    // Initialize with root node (or first branching factor nodes)
-    // For K-Means with single tree, start with root's children
+    // Initialize with root's first child index (OpenCL parity)
+    // CUDA tree layout: root at index 0, children at indices 1..BRANCHING
+    // heap_ids stores FIRST CHILD INDEX, so we start with 1 (root's first child)
+    // This matches OpenCL where heapId[0] = 0 points to root's children at 0..BRANCHING-1
     if (tid == 0) {
-        shared->heap_ids[0] = 0;  // Root node
+        shared->heap_ids[0] = 1;  // Root's first child index (CUDA has explicit root at 0)
         shared->heap_dists[0] = 0.0f;
     }
     __syncthreads();
@@ -375,9 +377,13 @@ __device__ void find_nodes_cooperative(
         sort_heap<LOC_SIZE>(shared->heap_dists, shared->heap_ids);
 
         // Check if we still have parent nodes in lower heap (OpenCL-style)
+        // heap_ids stores FIRST CHILD INDEX:
+        //   - >= num_nodes means leaf pointer (points to data region)
+        //   - < num_nodes means valid first-child-index, not a leaf
+        // IMPORTANT: Do NOT lookup node_index[my_id] because my_id is a first-child-index,
+        // not a node index. The slot at my_id might not even have valid data!
         int my_id = shared->heap_ids[tid];
-        bool is_leaf = (my_id >= num_nodes) || (my_id < 0) ||
-                       (my_id < num_nodes && node_index[my_id] >= num_nodes);
+        bool is_leaf = (my_id >= num_nodes) || (my_id < 0);
 
         check_done<LOC_SIZE>(is_leaf, shared);
 
@@ -534,11 +540,8 @@ __device__ void find_leaves_cooperative(
     // STEP 5: Main loop - continue until all leaf points processed
     // ========================================================================
     // Note: my_next_point already initialized above and tracks pre-fill progress
-    int leaf_iteration = 0;  // Debug: count iterations
 
     do {
-        leaf_iteration++;
-
         // Sort heap to bring closest points to bottom
         sort_heap<LOC_SIZE>(shared->heap_dists, shared->heap_ids);
 
@@ -572,20 +575,23 @@ __device__ void find_leaves_cooperative(
                     dataset + dataset_idx * dim,
                     dim
                 );
-                shared->loc_done = 0;  // Signal more work was done
+                // Note: don't set loc_done here - use check_done below for OpenCL parity
             } else {
                 // Heap full - stop trying to insert
                 break;
             }
         }
-        __syncthreads();
+
+        // ========================================================================
+        // OpenCL PARITY FIX: Termination condition
+        // ========================================================================
+        // OpenCL: checkDone(locI == 0, locDone) - continues if ANY thread tried to insert
+        // Previous CUDA: only signaled not done if insertion SUCCEEDED
+        // Bug: when heap full, CUDA exited prematurely even if threads had more leaves
+        // Fix: use check_done with locI == 0 to match OpenCL behavior
+        check_done<LOC_SIZE>(locI == 0, shared);
 
     } while (!shared->loc_done);
-
-    // Debug: Print leaf processing iteration count
-    if (blockIdx.x == 0 && tid == 0) {
-        printf("[CUDA FIX 2] Leaf processing iterations: %d (was: 16, target: 2-4)\n", leaf_iteration);
-    }
 
     __syncthreads();
 }
