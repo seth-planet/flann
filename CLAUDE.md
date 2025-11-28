@@ -417,8 +417,8 @@ This fork includes CUDA-accelerated implementations of nearest neighbor search a
 
 **Performance Characteristics:**
 - Best for large datasets (>10K points) and high dimensions (>32D)
-- Precision: 96.8% (Hierarchical), 79-97% (K-Means)
-- Test coverage: 19/19 tests passing
+- Precision: 96.8% (Hierarchical), **97.4%** (K-Means cooperative kernel)
+- Test coverage: 16/19 tests passing (3 K-Means tests require branching=7, not supported by cooperative kernel)
 - Memory: Zero leaks confirmed with compute-sanitizer
 
 ### Building with CUDA
@@ -601,19 +601,27 @@ Recommendation: Use k that is multiple of 4 for best performance.
 
 ### Test Results
 
-**K-Means CUDA (11/11 tests PASSED):**
+**K-Means CUDA (8/11 tests PASSED):**
 ```
 SIFT10K Dataset:
-- TestSearch:          87.5% precision  ✓
-- TestSearch2:         97.0% precision  ✓
-- TestAddIncremental:  88.0% precision  ✓
-- TestCopy:            87.5% precision  ✓
-- TestSave/Remove:     PASSED           ✓
+- TestSearch:          FAIL (branching=7 not supported by cooperative kernel)
+- TestSearch2:         99.42% precision ✓ (branching=64)
+- TestAddIncremental:  PASS             ✓
+- TestAddIncremental2: PASS             ✓
+- TestCopy:            FAIL (branching=7)
+- TestCopy2:           FAIL (branching=7)
+- TestRemove:          PASS             ✓
+- TestSave:            PASS             ✓
 
 SIFT100K Dataset:
-- TestSearch:          82.5% precision  ✓
-- TestAddIncremental:  81.1% precision  ✓
-- TestAddIncremental2: 79.1% precision  ✓
+- TestSearch:          97.4% precision  ✓ (branching=32)
+- TestAddIncremental:  PASS             ✓
+- TestAddIncremental2: PASS             ✓
+
+Note: 3 tests fail because they use branching=7, which requires LOC_SIZE
+to be a multiple of 7. The cooperative kernel uses LOC_SIZE=128 (optimal
+for precision/performance). These tests would need the single-threaded
+kernel fallback to pass.
 ```
 
 **Hierarchical CUDA (8/8 tests PASSED):**
@@ -698,40 +706,41 @@ sudo apt-get install nvidia-cuda-toolkit
 | Feature | CUDA | OpenCL | Analysis |
 |---------|------|--------|----------|
 | **Hardware Support** | NVIDIA only | Multi-vendor (NVIDIA, AMD, Intel) | OpenCL more flexible |
-| **K-Means Precision** | 87.5%-100% | 75%+ baseline | **CUDA EXCEEDS OpenCL** |
+| **K-Means Precision** | **97.4%** (cooperative) | 87.7% (LOC_SIZE=32) | **CUDA +10% higher precision** |
 | **Hierarchical Precision** | 96.8% | 97.2% | Within 0.4% tolerance |
-| **Test Coverage** | 19/19 tests ✅ | 19/19 tests ✅ | Both complete |
+| **Test Coverage** | 16/19 tests ✅ | 19/19 tests ✅ | 3 K-Means tests need branching=7 |
 | **Memory Leaks** | 0 (verified Nov 2025) | 0 (verified) | Both clean |
 | **Build Time** | Compile-time | Runtime kernel compilation | CUDA faster startup |
-| **Search Performance** | 27-37 μs/query | Comparable | Both excellent |
+| **Search Performance** | ~53 μs/query (K-Means) | ~13.5 μs/query (K-Means) | OpenCL ~4x faster |
 | **Maturity** | Production (2024-2025) | Experimental (2017-2018, modernized 2024) | CUDA more recent |
 
-**Verified Benchmark Results (Nov 20, 2025):**
+**Verified Benchmark Results (Nov 28, 2025):**
 
-K-Means CUDA:
-- SIFT100K TestSearch: **97.1%** (vs OpenCL 75%+ baseline) - **+22% improvement**
-- SIFT10K TestSearch: **87.5%** (vs OpenCL 75%+ baseline) - **+12% improvement**
-- SIFT10K TestSearch2: **100%** (perfect precision)
+K-Means CUDA (cooperative kernel, LOC_SIZE=128):
+- SIFT100K TestSearch: **97.4%** (vs OpenCL 87.7% at LOC_SIZE=32) - **+10% higher precision**
+- SIFT10K TestSearch2: **99.42%** (branching=64)
+- Search time: ~53 μs/query (vs OpenCL ~13.5 μs/query)
 
 Hierarchical CUDA:
 - Brief100K TestSearch: **96.8%** (vs OpenCL 97.2%) - **0.4% difference** (acceptable)
 - Brief100K TestSearch2: **96.8%** (consistent)
 
-Performance Timing (100K points, 1K queries):
-- K-Means search: 33 μs/query (~30K queries/second)
+Performance Timing (SIFT100K, 1K queries, branching=32):
+- K-Means CUDA search: 53 μs/query (~19K queries/second)
+- K-Means OpenCL search: 13.5 μs/query (~74K queries/second)
 - Hierarchical search: 27 μs/query (~37K queries/second)
 - GPU setup overhead: 0.3-0.5s (amortized over batch)
 
-**Regression Analysis Results:**
-- ✅ **NO PRECISION REGRESSIONS** - CUDA K-Means significantly exceeds OpenCL baseline
+**Analysis Results:**
+- ✅ **PRECISION EXCEEDS OpenCL** - CUDA K-Means achieves +10% higher precision (97.4% vs 87.7%)
 - ✅ **NO MEMORY SAFETY ISSUES** - 0 bytes leaked, 0 errors (compute-sanitizer)
-- ✅ **ALL TESTS PASSING** - 19/19 tests pass with excellent precision
-- ⚠️ **One performance regression identified**: Hierarchical single-threaded kernel has register spilling (10-20% impact, fixable in 30 min)
+- ✅ **16/19 TESTS PASSING** - 3 tests require branching=7 (cooperative kernel limitation)
+- ⚠️ **Performance trade-off**: CUDA is ~4x slower than OpenCL due to kernel efficiency differences
 
 **Recommendation:**
-- Use **CUDA** for NVIDIA GPUs - superior K-Means precision, production-ready, well-tested
-- Use **OpenCL** for multi-vendor GPU support (AMD/Intel) or if 0.4% Hierarchical precision matters
-- **For K-Means workloads**: CUDA is objectively superior (+12-22% precision over OpenCL baseline)
+- Use **CUDA** for NVIDIA GPUs when **precision is critical** - achieves 97.4% vs OpenCL's 87.7%
+- Use **OpenCL** for **speed-critical** applications (~4x faster) or multi-vendor GPU support
+- **Trade-off**: CUDA prioritizes precision, OpenCL prioritizes speed
 
 ### References
 

@@ -541,7 +541,9 @@ __device__ void find_leaves_cooperative(
     // ========================================================================
     // Note: my_next_point already initialized above and tracks pre-fill progress
 
+    int leaf_iteration = 0;
     do {
+        leaf_iteration++;
         // Sort heap to bring closest points to bottom
         sort_heap<LOC_SIZE>(shared->heap_dists, shared->heap_ids);
 
@@ -817,6 +819,102 @@ bool launch_kmeans_search_cooperative(
                 );
             } else if (branching == 64) {
                 kmeans_search_cooperative_kernel<K, 128, 256, 64><<<grid, block>>>(
+                    dataset, queries, node_index, node_pivots, node_variance,
+                    result_indices, result_distances, num_queries, dim, num_nodes, cb_index
+                );
+            } else {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    } else if (loc_size == 256) {
+        if (dim <= 128) {
+            if (branching == 32) {
+                kmeans_search_cooperative_kernel<K, 256, 128, 32><<<grid, block>>>(
+                    dataset, queries, node_index, node_pivots, node_variance,
+                    result_indices, result_distances, num_queries, dim, num_nodes, cb_index
+                );
+            } else if (branching == 64) {
+                kmeans_search_cooperative_kernel<K, 256, 128, 64><<<grid, block>>>(
+                    dataset, queries, node_index, node_pivots, node_variance,
+                    result_indices, result_distances, num_queries, dim, num_nodes, cb_index
+                );
+            } else {
+                return false;
+            }
+        } else if (dim <= 256) {
+            if (branching == 32) {
+                kmeans_search_cooperative_kernel<K, 256, 256, 32><<<grid, block>>>(
+                    dataset, queries, node_index, node_pivots, node_variance,
+                    result_indices, result_distances, num_queries, dim, num_nodes, cb_index
+                );
+            } else if (branching == 64) {
+                kmeans_search_cooperative_kernel<K, 256, 256, 64><<<grid, block>>>(
+                    dataset, queries, node_index, node_pivots, node_variance,
+                    result_indices, result_distances, num_queries, dim, num_nodes, cb_index
+                );
+            } else {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    } else if (loc_size == 512) {
+        if (dim <= 128) {
+            if (branching == 32) {
+                kmeans_search_cooperative_kernel<K, 512, 128, 32><<<grid, block>>>(
+                    dataset, queries, node_index, node_pivots, node_variance,
+                    result_indices, result_distances, num_queries, dim, num_nodes, cb_index
+                );
+            } else if (branching == 64) {
+                kmeans_search_cooperative_kernel<K, 512, 128, 64><<<grid, block>>>(
+                    dataset, queries, node_index, node_pivots, node_variance,
+                    result_indices, result_distances, num_queries, dim, num_nodes, cb_index
+                );
+            } else {
+                return false;
+            }
+        } else if (dim <= 256) {
+            if (branching == 32) {
+                kmeans_search_cooperative_kernel<K, 512, 256, 32><<<grid, block>>>(
+                    dataset, queries, node_index, node_pivots, node_variance,
+                    result_indices, result_distances, num_queries, dim, num_nodes, cb_index
+                );
+            } else if (branching == 64) {
+                kmeans_search_cooperative_kernel<K, 512, 256, 64><<<grid, block>>>(
+                    dataset, queries, node_index, node_pivots, node_variance,
+                    result_indices, result_distances, num_queries, dim, num_nodes, cb_index
+                );
+            } else {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    } else if (loc_size == 1024) {
+        if (dim <= 128) {
+            if (branching == 32) {
+                kmeans_search_cooperative_kernel<K, 1024, 128, 32><<<grid, block>>>(
+                    dataset, queries, node_index, node_pivots, node_variance,
+                    result_indices, result_distances, num_queries, dim, num_nodes, cb_index
+                );
+            } else if (branching == 64) {
+                kmeans_search_cooperative_kernel<K, 1024, 128, 64><<<grid, block>>>(
+                    dataset, queries, node_index, node_pivots, node_variance,
+                    result_indices, result_distances, num_queries, dim, num_nodes, cb_index
+                );
+            } else {
+                return false;
+            }
+        } else if (dim <= 256) {
+            if (branching == 32) {
+                kmeans_search_cooperative_kernel<K, 1024, 256, 32><<<grid, block>>>(
+                    dataset, queries, node_index, node_pivots, node_variance,
+                    result_indices, result_distances, num_queries, dim, num_nodes, cb_index
+                );
+            } else if (branching == 64) {
+                kmeans_search_cooperative_kernel<K, 1024, 256, 64><<<grid, block>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );

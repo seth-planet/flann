@@ -286,7 +286,7 @@ __device__ inline int find_nearest_neighbor(
  * @param dim Vector dimension
  * @param num_nodes Total number of tree nodes
  */
-template<int K, int MAX_CHECKS>
+template<int K, int MAX_CHECKS, int PQ_SIZE>
 __global__ void kmeans_search_kernel(
     const float* __restrict__ dataset,
     const float* __restrict__ queries,
@@ -313,10 +313,24 @@ __global__ void kmeans_search_kernel(
     int result_ids[K];
     init_result_heap<K>(result_dists, result_ids);
 
-    // Per-thread priority queue (nodes to explore, min-heap)
-    const int MAX_PQ_SIZE = MAX_CHECKS;
-    float pq_dists[MAX_PQ_SIZE];
-    int pq_nodes[MAX_PQ_SIZE];
+    // ====================================================================
+    // PHASE 5.1: Use shared memory for priority queue instead of stack arrays
+    // This eliminates register spilling to local memory (400-800 cycle latency)
+    // and reduces to shared memory access (4-5 cycle latency).
+    //
+    // Memory layout: [all threads' pq_dists | all threads' pq_nodes]
+    // ====================================================================
+    extern __shared__ char s_mem[];  // Dynamic shared memory
+
+    // Partition shared memory: distances first, then node IDs
+    float* shared_pq_dists = (float*)s_mem;
+    int* shared_pq_nodes = (int*)(shared_pq_dists + blockDim.x * PQ_SIZE);
+
+    // Each thread gets its own slice of the shared memory
+    float* pq_dists = shared_pq_dists + threadIdx.x * PQ_SIZE;
+    int* pq_nodes = shared_pq_nodes + threadIdx.x * PQ_SIZE;
+
+    const int MAX_PQ_SIZE = PQ_SIZE;
     int pq_size = 0;
 
     int checks = 0;
@@ -377,15 +391,36 @@ __global__ void kmeans_search_kernel(
 }
 
 /**
- * @brief Kernel dispatcher with runtime parameter selection
+ * @brief Helper to round PQ size to next supported template instantiation
  *
- * Dispatches to appropriate template-specialized kernel based on k value.
- * Supports k ∈ {1, 5, 10, 20, 50, 100}.
+ * Supports common sizes: 8, 16, 32, 64, 96, 128, 256
+ * This matches OpenCL's heap size rounding behavior.
+ */
+inline int roundPQSize(int pq_size) {
+    if (pq_size <= 8) return 8;
+    if (pq_size <= 16) return 16;
+    if (pq_size <= 32) return 32;
+    if (pq_size <= 64) return 64;
+    if (pq_size <= 96) return 96;
+    if (pq_size <= 128) return 128;
+    return 256;
+}
+
+/**
+ * @brief Kernel launcher with dynamic PQ sizing
+ *
+ * Dispatches to appropriate template instantiation based on k, max_checks, and pq_size.
+ * The pq_size is calculated dynamically based on tree structure (see calculateHeapSize).
+ * This provides parity with OpenCL's dynamic heap sizing behavior.
+ *
+ * Supports k ∈ {1, 5, 10, 20, 50, 100}, max_checks ∈ {32, 64, 128, 256},
+ * and pq_size ∈ {8, 16, 32, 64, 96, 128, 256}.
  *
  * @param dataset Full dataset
  * @param queries Query vectors
  * @param tree_nodes Tree node array
  * @param tree_pivots Pivot array
+ * @param dataset_indices Dataset indices (for leaves)
  * @param result_indices Output indices
  * @param result_distances Output distances
  * @param num_queries Number of queries
@@ -393,8 +428,10 @@ __global__ void kmeans_search_kernel(
  * @param num_nodes Number of tree nodes
  * @param k Number of nearest neighbors
  * @param max_checks Maximum distance computations
+ * @param pq_size Priority queue size (calculated from tree structure)
  * @param grid Grid dimensions
  * @param block Block dimensions
+ * @param cb_index Center-based index parameter
  * @return true if kernel launched successfully, false if unsupported k
  */
 bool launch_kmeans_search(
@@ -410,130 +447,131 @@ bool launch_kmeans_search(
     size_t num_nodes,
     int k,
     int max_checks,
+    int pq_size,
     dim3 grid,
     dim3 block,
     float cb_index
 ) {
-    // Dispatch based on k and max_checks
-    // Common configurations: k ∈ {1, 5, 10, 20, 50, 100}, max_checks ∈ {32, 64, 128, 256}
+    // Round PQ size to nearest supported template instantiation
+    int rounded_pq = roundPQSize(pq_size);
+
+    // ====================================================================
+    // PHASE 5.1: Calculate shared memory requirement for priority queues
+    // Layout: [all threads' pq_dists | all threads' pq_nodes]
+    // Each thread needs: PQ_SIZE floats + PQ_SIZE ints
+    // ====================================================================
+    size_t shared_mem_bytes = block.x * rounded_pq * (sizeof(float) + sizeof(int));
+
+    // Dispatch based on k, max_checks, and rounded PQ size
+    // Template parameters: <K, MAX_CHECKS, PQ_SIZE>
+
+    #define LAUNCH_KERNEL(K, MAX_CHECKS, PQ_SIZE) \
+        kmeans_search_kernel<K, MAX_CHECKS, PQ_SIZE><<<grid, block, shared_mem_bytes>>>( \
+            dataset, queries, tree_nodes, tree_pivots, dataset_indices, \
+            result_indices, result_distances, \
+            num_queries, dim, num_nodes, cb_index)
 
     if (k == 1) {
         if (max_checks <= 32) {
-            kmeans_search_kernel<1, 32><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 32) LAUNCH_KERNEL(1, 32, 32);
+            else if (rounded_pq <= 64) LAUNCH_KERNEL(1, 32, 64);
+            else if (rounded_pq <= 96) LAUNCH_KERNEL(1, 32, 96);
+            else LAUNCH_KERNEL(1, 32, 128);
         } else if (max_checks <= 64) {
-            kmeans_search_kernel<1, 64><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 32) LAUNCH_KERNEL(1, 64, 32);
+            else if (rounded_pq <= 64) LAUNCH_KERNEL(1, 64, 64);
+            else if (rounded_pq <= 96) LAUNCH_KERNEL(1, 64, 96);
+            else LAUNCH_KERNEL(1, 64, 128);
         } else if (max_checks <= 128) {
-            kmeans_search_kernel<1, 128><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 64) LAUNCH_KERNEL(1, 128, 64);
+            else if (rounded_pq <= 96) LAUNCH_KERNEL(1, 128, 96);
+            else LAUNCH_KERNEL(1, 128, 128);
         } else {
-            kmeans_search_kernel<1, 256><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 96) LAUNCH_KERNEL(1, 256, 96);
+            else if (rounded_pq <= 128) LAUNCH_KERNEL(1, 256, 128);
+            else LAUNCH_KERNEL(1, 256, 256);
         }
     } else if (k == 5) {
         if (max_checks <= 32) {
-            kmeans_search_kernel<5, 32><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 32) LAUNCH_KERNEL(5, 32, 32);
+            else if (rounded_pq <= 64) LAUNCH_KERNEL(5, 32, 64);
+            else if (rounded_pq <= 96) LAUNCH_KERNEL(5, 32, 96);
+            else LAUNCH_KERNEL(5, 32, 128);
         } else if (max_checks <= 64) {
-            kmeans_search_kernel<5, 64><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 32) LAUNCH_KERNEL(5, 64, 32);
+            else if (rounded_pq <= 64) LAUNCH_KERNEL(5, 64, 64);
+            else if (rounded_pq <= 96) LAUNCH_KERNEL(5, 64, 96);
+            else LAUNCH_KERNEL(5, 64, 128);
         } else if (max_checks <= 128) {
-            kmeans_search_kernel<5, 128><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 64) LAUNCH_KERNEL(5, 128, 64);
+            else if (rounded_pq <= 96) LAUNCH_KERNEL(5, 128, 96);
+            else LAUNCH_KERNEL(5, 128, 128);
         } else {
-            kmeans_search_kernel<5, 256><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 96) LAUNCH_KERNEL(5, 256, 96);
+            else if (rounded_pq <= 128) LAUNCH_KERNEL(5, 256, 128);
+            else LAUNCH_KERNEL(5, 256, 256);
         }
     } else if (k == 10) {
         if (max_checks <= 32) {
-            kmeans_search_kernel<10, 32><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 32) LAUNCH_KERNEL(10, 32, 32);
+            else if (rounded_pq <= 64) LAUNCH_KERNEL(10, 32, 64);
+            else if (rounded_pq <= 96) LAUNCH_KERNEL(10, 32, 96);
+            else LAUNCH_KERNEL(10, 32, 128);
         } else if (max_checks <= 64) {
-            kmeans_search_kernel<10, 64><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 32) LAUNCH_KERNEL(10, 64, 32);
+            else if (rounded_pq <= 64) LAUNCH_KERNEL(10, 64, 64);
+            else if (rounded_pq <= 96) LAUNCH_KERNEL(10, 64, 96);
+            else LAUNCH_KERNEL(10, 64, 128);
         } else if (max_checks <= 128) {
-            kmeans_search_kernel<10, 128><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 64) LAUNCH_KERNEL(10, 128, 64);
+            else if (rounded_pq <= 96) LAUNCH_KERNEL(10, 128, 96);
+            else LAUNCH_KERNEL(10, 128, 128);
         } else {
-            kmeans_search_kernel<10, 256><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 96) LAUNCH_KERNEL(10, 256, 96);
+            else if (rounded_pq <= 128) LAUNCH_KERNEL(10, 256, 128);
+            else LAUNCH_KERNEL(10, 256, 256);
         }
     } else if (k == 20) {
         if (max_checks <= 32) {
-            kmeans_search_kernel<20, 32><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 32) LAUNCH_KERNEL(20, 32, 32);
+            else if (rounded_pq <= 64) LAUNCH_KERNEL(20, 32, 64);
+            else if (rounded_pq <= 96) LAUNCH_KERNEL(20, 32, 96);
+            else LAUNCH_KERNEL(20, 32, 128);
         } else if (max_checks <= 64) {
-            kmeans_search_kernel<20, 64><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 32) LAUNCH_KERNEL(20, 64, 32);
+            else if (rounded_pq <= 64) LAUNCH_KERNEL(20, 64, 64);
+            else if (rounded_pq <= 96) LAUNCH_KERNEL(20, 64, 96);
+            else LAUNCH_KERNEL(20, 64, 128);
         } else if (max_checks <= 128) {
-            kmeans_search_kernel<20, 128><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 64) LAUNCH_KERNEL(20, 128, 64);
+            else if (rounded_pq <= 96) LAUNCH_KERNEL(20, 128, 96);
+            else LAUNCH_KERNEL(20, 128, 128);
         } else {
-            kmeans_search_kernel<20, 256><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 96) LAUNCH_KERNEL(20, 256, 96);
+            else if (rounded_pq <= 128) LAUNCH_KERNEL(20, 256, 128);
+            else LAUNCH_KERNEL(20, 256, 256);
         }
     } else if (k == 50) {
         if (max_checks <= 128) {
-            kmeans_search_kernel<50, 128><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 96) LAUNCH_KERNEL(50, 128, 96);
+            else LAUNCH_KERNEL(50, 128, 128);
         } else {
-            kmeans_search_kernel<50, 256><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 128) LAUNCH_KERNEL(50, 256, 128);
+            else LAUNCH_KERNEL(50, 256, 256);
         }
     } else if (k == 100) {
         if (max_checks <= 128) {
-            kmeans_search_kernel<100, 128><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            LAUNCH_KERNEL(100, 128, 128);
         } else {
-            kmeans_search_kernel<100, 256><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices,
-                result_indices, result_distances,
-                num_queries, dim, num_nodes, cb_index);
+            if (rounded_pq <= 128) LAUNCH_KERNEL(100, 256, 128);
+            else LAUNCH_KERNEL(100, 256, 256);
         }
     } else {
         // Unsupported k value
         return false;
     }
 
+    #undef LAUNCH_KERNEL
     return true;
 }
 
