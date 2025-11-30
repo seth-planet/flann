@@ -476,9 +476,13 @@ flann::SearchParams(512)  // Thorough, ~99% recall
 ### Memory Optimization
 
 ```cpp
-// Pinned memory for faster transfers
-// The library handles this internally, but for manual buffers:
-cudaMallocHost(&pinned_queries, size);  // 2-3x faster H2D transfer
+// Persistent GPU buffers (handled internally)
+// The library pre-allocates GPU buffers during buildCUDAKnnSearch()
+// and reuses them across searches for ~14% speedup.
+
+// Note: Pinned memory (cudaMallocHost) provides NO benefit for small
+// transfers (<1MB). A/B testing showed identical performance for the
+// ~60KB query/result buffers used in typical searches.
 ```
 
 ### Profiling

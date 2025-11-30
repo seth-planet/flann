@@ -321,10 +321,10 @@ public:
         gpu_indices_buffer_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
         gpu_dists_buffer_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
 
-        // Pre-allocate pinned host staging buffers (2-3x faster DMA transfers)
-        pinned_query_staging_.resize(gpu_buffer_max_queries_ * padded_bytes);
-        pinned_indices_staging_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
-        pinned_dists_staging_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
+        // Pre-allocate host staging buffers
+        staging_query_.resize(gpu_buffer_max_queries_ * padded_bytes);
+        staging_indices_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
+        staging_dists_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
 
         // Warmup kernel launch to trigger JIT compilation during setup
         // This moves ~37ms one-time cost from first search to buildCUDAKnnSearch()
@@ -405,10 +405,10 @@ public:
         std::swap(gpu_buffer_max_queries_, other.gpu_buffer_max_queries_);
         std::swap(gpu_buffer_max_knn_, other.gpu_buffer_max_knn_);
 
-        // Swap pinned host staging buffers
-        std::swap(pinned_query_staging_, other.pinned_query_staging_);
-        std::swap(pinned_indices_staging_, other.pinned_indices_staging_);
-        std::swap(pinned_dists_staging_, other.pinned_dists_staging_);
+        // Swap host staging buffers
+        std::swap(staging_query_, other.staging_query_);
+        std::swap(staging_indices_, other.staging_indices_);
+        std::swap(staging_dists_, other.staging_dists_);
     }
 
     // ========================================================================
@@ -512,10 +512,13 @@ protected:
         gpu_buffer_max_queries_ = 0;
         gpu_buffer_max_knn_ = 0;
 
-        // Free pinned host staging buffers
-        pinned_query_staging_.resize(0);
-        pinned_indices_staging_.resize(0);
-        pinned_dists_staging_.resize(0);
+        // Clear host staging buffers
+        staging_query_.clear();
+        staging_query_.shrink_to_fit();
+        staging_indices_.clear();
+        staging_indices_.shrink_to_fit();
+        staging_dists_.clear();
+        staging_dists_.shrink_to_fit();
 
         gpu_initialized_ = false;
         gpu_search_ready_ = false;
@@ -807,13 +810,13 @@ protected:
             gpu_query_buffer_.resize(gpu_buffer_max_queries_ * padded_bytes);
             gpu_indices_buffer_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
             gpu_dists_buffer_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
-            pinned_query_staging_.resize(gpu_buffer_max_queries_ * padded_bytes);
-            pinned_indices_staging_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
-            pinned_dists_staging_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
+            staging_query_.resize(gpu_buffer_max_queries_ * padded_bytes);
+            staging_indices_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
+            staging_dists_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
         }
 
-        // Pad queries into pinned host buffer (fast DMA transfer)
-        ElementType* query_ptr = pinned_query_staging_.get();
+        // Pad queries into staging buffer for GPU upload
+        ElementType* query_ptr = staging_query_.data();
         for (size_t i = 0; i < num_queries; ++i) {
             std::memcpy(query_ptr + i * padded_bytes,
                        queries[i],
@@ -824,7 +827,7 @@ protected:
                        (padded_bytes - this->veclen_) * sizeof(ElementType));
         }
 
-        // Upload from pinned memory (2-3x faster DMA transfer)
+        // Upload queries to GPU
         gpu_query_buffer_.upload(query_ptr, num_queries * padded_bytes);
 
         // Run cooperative kernel using persistent GPU buffers
@@ -855,9 +858,9 @@ protected:
         CUDA_CHECK_LAST();
         CUDA_CHECK(cudaDeviceSynchronize());
 
-        // Download results to pinned host buffers (2-3x faster DMA transfer)
-        int* indices_ptr = pinned_indices_staging_.get();
-        int* dists_ptr = pinned_dists_staging_.get();
+        // Download results from GPU to staging buffers
+        int* indices_ptr = staging_indices_.data();
+        int* dists_ptr = staging_dists_.data();
         gpu_indices_buffer_.download(indices_ptr, num_queries * knn);
         gpu_dists_buffer_.download(dists_ptr, num_queries * knn);
 
@@ -895,10 +898,11 @@ private:
     mutable size_t gpu_buffer_max_queries_ = 0;         ///< Current query buffer capacity
     mutable size_t gpu_buffer_max_knn_ = 0;             ///< Current k capacity
 
-    // Pinned host-side staging buffers for fast DMA transfers (2-3x faster than pageable)
-    mutable PinnedBuffer<ElementType> pinned_query_staging_;  ///< Pinned query staging buffer
-    mutable PinnedBuffer<int> pinned_indices_staging_;        ///< Pinned results staging buffer
-    mutable PinnedBuffer<int> pinned_dists_staging_;          ///< Pinned distances staging buffer
+    // Host-side staging buffers for CPU↔GPU transfers
+    // Note: std::vector (pageable) performs same as cudaMallocHost (pinned) for small transfers (<1MB)
+    mutable std::vector<ElementType> staging_query_;    ///< Query staging buffer
+    mutable std::vector<int> staging_indices_;          ///< Results staging buffer
+    mutable std::vector<int> staging_dists_;            ///< Distances staging buffer
 };
 
 } // namespace cuda
