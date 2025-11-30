@@ -33,7 +33,6 @@
 
 #include <cuda_runtime.h>
 #include <limits.h>
-#include <cstdio>
 #include "../kmeans_node_gpu.h"
 #include "distance_kernels.cuh"
 #include "heap_utils.cuh"
@@ -106,16 +105,6 @@ __device__ inline int explore_root_branches_hamming(
     // Tree 0 → slots 0-31, Tree 1 → slots 32-63, etc. (matches OpenCL)
     int child_start = tree_id * branching;
 
-    // Debug: Log root exploration for first thread/block
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-        printf("[ROOT DEBUG] Exploring tree %d root (implicit): children at pivot indices %d-%d\n",
-               tree_id, child_start, child_start + branching - 1);
-        // Show first child's pivot bytes
-        const unsigned char* first_pivot = tree_pivots + child_start * padded_bytes;
-        printf("[ROOT DEBUG]   First child pivot[%d] bytes: %02x %02x %02x %02x\n",
-               child_start, first_pivot[0], first_pivot[1], first_pivot[2], first_pivot[3]);
-    }
-
     // Compute distances to all root's children
     int dist_arr[64];  // Max branching factor
     int best_idx = 0;
@@ -148,26 +137,7 @@ __device__ inline int explore_root_branches_hamming(
         }
     }
 
-    // ========================================================================
-    // PHASE 2: Root Exploration Verification (Debug - Query 0 only)
-    // ========================================================================
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-        printf("[PHASE 2 ROOT] Tree %d exploration:\n", tree_id);
-        printf("  Child range: pivot indices %d-%d\n", child_start, child_start + branching - 1);
-        printf("  First 8 children distances:\n");
-        for (int i = 0; i < branching && i < 8; ++i) {
-            int pivot_idx = child_start + i;
-            const unsigned char* pivot = tree_pivots + pivot_idx * padded_bytes;
-            printf("    Child %d (node %d): dist=%d, pivot[0-3]=%02x %02x %02x %02x\n",
-                   i, pivot_idx, dist_arr[i],
-                   pivot[0], pivot[1], pivot[2], pivot[3]);
-        }
-        printf("  Best child: index %d (node %d), dist=%d\n\n",
-               best_idx, child_start + best_idx, best_dist);
-    }
-    // ========================================================================
-
-    // Return closest child node index (REVERT: Direct index)
+    // Return closest child node index
     return child_start + best_idx;
 }
 
@@ -205,20 +175,6 @@ __device__ inline int explore_node_branches_hamming(
     // OpenCL dereferences nodeIndex before exploring: nodePtr = nodeIndexArr[nodeId]
     int child_start = device_node_index[node_index];  // Read from hybrid array, NOT struct
     int child_count = node.child_count;
-
-    // Debug: Log pivot access for first thread exploring roots
-    if (threadIdx.x == 0 && blockIdx.x == 0 && (node_index <= 3)) {
-        printf("[PIVOT DEBUG] Exploring node %d: child_start=%d, child_count=%d\n",
-               node_index, child_start, child_count);
-        if (child_count > 0) {
-            printf("[PIVOT DEBUG]   Will access pivots at indices %d-%d\n",
-                   child_start, child_start + child_count - 1);
-            // Show first pivot's first 4 bytes
-            const unsigned char* first_pivot = tree_pivots + child_start * padded_bytes;
-            printf("[PIVOT DEBUG]   First child pivot[%d] bytes: %02x %02x %02x %02x\n",
-                   child_start, first_pivot[0], first_pivot[1], first_pivot[2], first_pivot[3]);
-        }
-    }
 
     // Compute distances to all children
     int dist_arr[64];  // Max branching factor
@@ -322,16 +278,6 @@ __device__ inline int find_nearest_neighbor_hamming(
         // Indirection 2: Read leaf count from first element of leaf data region
         int leaf_size = device_node_index[leaf_ptr];
 
-        // Debug: Log first leaf access for query 0
-        if (threadIdx.x == 0 && blockIdx.x == 0 && num_checked == 0) {
-            printf("[LEAF DEBUG] First leaf: node_index=%d, leaf_ptr=%d, leaf_size=%d\n",
-                   node_index, leaf_ptr, leaf_size);
-            printf("[LEAF DEBUG]   First 3 indices: %d %d %d\n",
-                   device_node_index[leaf_ptr + 1],
-                   device_node_index[leaf_ptr + 2],
-                   device_node_index[leaf_ptr + 3]);
-        }
-
         // Process all points in this leaf (indices are at leaf_ptr+1, leaf_ptr+2, ...)
         // NOTE: Process complete leaf without mid-leaf termination to match OpenCL behavior
         // and avoid missing potentially better neighbors within visited leaves
@@ -378,15 +324,6 @@ __device__ inline int find_nearest_neighbor_hamming(
                 // Insert at sorted position (ascending order)
                 result_dists[i] = dist;
                 result_indices[i] = dataset_idx;
-
-                // Debug output (SORTED ARRAY format)
-                if (threadIdx.x == 0 && blockIdx.x == 0 && checks < 30) {
-                    printf("[SORTED INSERT %d] idx=%d, dist=%d at position %d\n",
-                           checks, dataset_idx, dist, i);
-                    printf("  Array: [%d,%d,%d] dists=[%d,%d,%d]\n\n",
-                           result_indices[0], result_indices[1], result_indices[2],
-                           result_dists[0], result_dists[1], result_dists[2]);
-                }
             }
 
             // ALWAYS increment checks at the end (matching OpenCL line 1330)
@@ -526,30 +463,7 @@ __global__ void hierarchical_search_kernel(
         }
     } while (next_node != -1 && (checks < MAX_CHECKS || checks < K));
 
-    // ========================================================================
-    // PHASE 4: Final Heap State Verification (Debug - Query 0 only)
-    // ========================================================================
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-        printf("\n[PHASE 4 FINAL] Search complete for query 0:\n");
-        printf("  Total checks performed: %d\n", checks);
-        printf("  Total unique dataset indices examined: %d\n", num_checked);
-        printf("  Heap BEFORE sorting: ids=[%d,%d,%d] dists=[%d,%d,%d]\n",
-               result_ids[0], result_ids[1], result_ids[2],
-               result_dists[0], result_dists[1], result_dists[2]);
-    }
-
-    // NO SORTING NEEDED: Results are already in sorted order (ascending distance)
-    // We use sorted array insertion (matching OpenCL), not max-heap
-    // Best result at index 0, worst at K-1
-
-    // Log final results for query 0
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-        printf("  Final sorted results: ids=[%d,%d,%d] dists=[%d,%d,%d]\n\n",
-               result_ids[0], result_ids[1], result_ids[2],
-               result_dists[0], result_dists[1], result_dists[2]);
-    }
-
-    // Copy results to output (already in ascending distance order)
+    // Copy results to output (already in ascending distance order from sorted array insertion)
     for (int i = 0; i < K; ++i) {
         result_indices[gid * K + i] = result_ids[i];
         result_distances[gid * K + i] = result_dists[i];

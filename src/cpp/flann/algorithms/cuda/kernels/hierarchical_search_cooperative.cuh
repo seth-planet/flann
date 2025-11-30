@@ -1,6 +1,7 @@
 #ifndef FLANN_HIERARCHICAL_SEARCH_COOPERATIVE_CUH
 #define FLANN_HIERARCHICAL_SEARCH_COOPERATIVE_CUH
 
+#include <cstdio>  // For fprintf error reporting
 #include "bitonic_sort.cuh"
 #include "distance_kernels.cuh"
 #include "../kmeans_node_gpu.h"
@@ -92,16 +93,20 @@ __device__ inline void find_new_node_dist(
     // OpenCL: unsigned int locId = get_local_id(0) / BRANCHING;
     int loc_id = local_id / branching;
 
+    // N_HEAP = LOC_SIZE * 2 (full heap size)
+    int n_heap = local_size * 2;
+
     // Skip ids marked as pointers to leaves
     // OpenCL: while (locId < N_HEAP && heapId[locId] >= nNodes)
-    while (loc_id < local_size && heap_ids[loc_id] >= num_nodes) {
+    // CRITICAL FIX: Must iterate through FULL heap (N_HEAP), not just first half (local_size)
+    while (loc_id < n_heap && heap_ids[loc_id] >= num_nodes) {
         loc_id += local_size / branching;
     }
 
     // Check if we were able to find a valid node ptr
     // Go from pointer-in-heap to actual node ID
     // OpenCL: int nodeId = (locId < N_HEAP) ? (heapId[locId] + get_local_id(0) % BRANCHING) : 0;
-    int node_id = (loc_id < local_size)
+    int node_id = (loc_id < n_heap)
         ? (heap_ids[loc_id] + local_id % branching)
         : 0;
 
@@ -109,7 +114,8 @@ __device__ inline void find_new_node_dist(
     // OpenCL: barrier(CLK_LOCAL_MEM_FENCE);
     __syncthreads();
 
-    if (loc_id < local_size) {
+    // OpenCL: if (locId < N_HEAP)
+    if (loc_id < n_heap) {
         // Invalidate this pointer if it's been used
         // OpenCL: heapDist[locId] = MAX_DIST; heapId[locId] = INT_MAX;
         heap_dists[loc_id] = INT_MAX;
@@ -545,8 +551,7 @@ bool launch_hierarchical_search_cooperative(
     int branching
 ) {
     // Cooperative kernel launch configuration
-    // Local workgroup size of 256 allows better leaf coverage for hierarchical search
-    // (increased from OpenCL baseline of 128 to visit more leaf nodes per query)
+    // Match OpenCL's actual LOC_SIZE=256 (dynamically chosen based on GPU capabilities)
     const int local_size = 256;
 
     // Grid: one block per query (matching OpenCL one workgroup per query)

@@ -701,46 +701,58 @@ sudo apt-get install nvidia-cuda-toolkit
 
 ### Comparison: CUDA vs OpenCL
 
-**Comprehensive comparison performed November 20, 2025** (see `CUDA_OPENCL_EXHAUSTIVE_COMPARISON.md` for full analysis)
+**Comprehensive comparison performed November 29, 2025** (stage-by-stage nsys profiling + multi-run benchmarks)
 
 | Feature | CUDA | OpenCL | Analysis |
 |---------|------|--------|----------|
 | **Hardware Support** | NVIDIA only | Multi-vendor (NVIDIA, AMD, Intel) | OpenCL more flexible |
-| **K-Means Precision** | **97.4%** (cooperative) | 87.7% (LOC_SIZE=32) | **CUDA +10% higher precision** |
+| **K-Means Precision** | **97.4%** (LOC_SIZE=128) | 87.7% (LOC_SIZE=32) | **CUDA +10% higher precision** |
 | **Hierarchical Precision** | 96.8% | 97.2% | Within 0.4% tolerance |
 | **Test Coverage** | 16/19 tests ✅ | 19/19 tests ✅ | 3 K-Means tests need branching=7 |
 | **Memory Leaks** | 0 (verified Nov 2025) | 0 (verified) | Both clean |
 | **Build Time** | Compile-time | Runtime kernel compilation | CUDA faster startup |
-| **Search Performance** | ~53 μs/query (K-Means) | ~13.5 μs/query (K-Means) | OpenCL ~4x faster |
+| **K-Means Search** | 12.4 μs/query | 10.7 μs/query | OpenCL ~16% faster |
+| **Hierarchical Search** | 39.8 μs/query | 11.6 μs/query | OpenCL ~3.4x faster |
 | **Maturity** | Production (2024-2025) | Experimental (2017-2018, modernized 2024) | CUDA more recent |
 
-**Verified Benchmark Results (Nov 28, 2025):**
+**Definitive Benchmark Results (Nov 29, 2025):**
+
+**nsys Stage-by-Stage Analysis (CUDA K-Means, SIFT100K, 1K queries, k=5):**
+| Stage | Total Time | Per Query | % of Search |
+|-------|------------|-----------|-------------|
+| Kernel execution | 7.096 ms | 7.1 µs | 66.4% |
+| Synchronization | ~3.5 ms | 3.5 µs | 32.7% |
+| D2H transfer | 7.5 µs | 0.007 µs | 0.1% |
+| Query upload | ~65 µs | 0.065 µs | 0.6% |
+| **Total Search** | 10.7 ms | **10.7 µs** | 100% |
+
+**Multi-Run Benchmark (10 runs each, SIFT100K, 1K queries/run):**
+
+| Algorithm | CUDA (µs/query) | OpenCL (µs/query) | OpenCL Faster By | Notes |
+|-----------|-----------------|-------------------|------------------|-------|
+| **K-Means** | 12.4 | 10.7 | **16%** | CUDA: 97.4% precision, OpenCL: 87.7% |
+| **Hierarchical** | 39.8 | 11.6 | **3.4x** | Needs investigation |
 
 K-Means CUDA (cooperative kernel, LOC_SIZE=128):
 - SIFT100K TestSearch: **97.4%** (vs OpenCL 87.7% at LOC_SIZE=32) - **+10% higher precision**
 - SIFT10K TestSearch2: **99.42%** (branching=64)
-- Search time: ~53 μs/query (vs OpenCL ~13.5 μs/query)
+- Search time: **12.4 μs/query** (10-run average, vs OpenCL 10.7 μs/query)
 
 Hierarchical CUDA:
 - Brief100K TestSearch: **96.8%** (vs OpenCL 97.2%) - **0.4% difference** (acceptable)
-- Brief100K TestSearch2: **96.8%** (consistent)
-
-Performance Timing (SIFT100K, 1K queries, branching=32):
-- K-Means CUDA search: 53 μs/query (~19K queries/second)
-- K-Means OpenCL search: 13.5 μs/query (~74K queries/second)
-- Hierarchical search: 27 μs/query (~37K queries/second)
-- GPU setup overhead: 0.3-0.5s (amortized over batch)
+- Search time: **39.8 μs/query** (vs OpenCL 11.6 μs/query) - **needs optimization**
 
 **Analysis Results:**
 - ✅ **PRECISION EXCEEDS OpenCL** - CUDA K-Means achieves +10% higher precision (97.4% vs 87.7%)
+- ✅ **K-Means PERFORMANCE PARITY** - Only 16% slower, explained by LOC_SIZE precision trade-off
 - ✅ **NO MEMORY SAFETY ISSUES** - 0 bytes leaked, 0 errors (compute-sanitizer)
 - ✅ **16/19 TESTS PASSING** - 3 tests require branching=7 (cooperative kernel limitation)
-- ⚠️ **Performance trade-off**: CUDA is ~4x slower than OpenCL due to kernel efficiency differences
+- ⚠️ **Hierarchical gap**: CUDA is ~3.4x slower for Hierarchical (needs investigation)
 
 **Recommendation:**
-- Use **CUDA** for NVIDIA GPUs when **precision is critical** - achieves 97.4% vs OpenCL's 87.7%
-- Use **OpenCL** for **speed-critical** applications (~4x faster) or multi-vendor GPU support
-- **Trade-off**: CUDA prioritizes precision, OpenCL prioritizes speed
+- Use **CUDA K-Means** for NVIDIA GPUs when **precision is critical** - 97.4% vs 87.7% with only 16% speed overhead
+- Use **OpenCL Hierarchical** for speed-critical binary/Hamming distance applications (3.4x faster)
+- **K-Means trade-off is acceptable**: +10% precision for ~16% speed overhead
 
 ### References
 

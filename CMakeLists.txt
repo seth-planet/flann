@@ -164,9 +164,55 @@ if (BUILD_CUDA_LIB)
         # Enable CUDA as a first-class language
         enable_language(CUDA)
 
-        # Target GPU architectures (Volta through Hopper: compute capability 7.0-9.0)
-        set(CMAKE_CUDA_ARCHITECTURES 70 75 80 86 89 90 CACHE STRING "CUDA architectures to build for")
-        message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+        # CUDA Architecture Configuration
+        # Supports: native (auto-detect), environment variable, or explicit list
+        #
+        # Architecture reference:
+        #   75  = Tesla T4, RTX 20-series (Turing)
+        #   80  = A100, RTX 30-series laptop (Ampere)
+        #   86  = RTX 30-series desktop, A10 (Ampere)
+        #   87  = Jetson Orin AGX/NX (Ampere)
+        #   89  = RTX 40-series, L4 (Ada Lovelace)
+        #   90  = H100 (Hopper)
+        #
+        # Usage:
+        #   cmake -DCMAKE_CUDA_ARCHITECTURES=native ..  # Auto-detect (fastest build)
+        #   cmake -DCMAKE_CUDA_ARCHITECTURES=87 ..      # Jetson Orin only
+        #   cmake -DCMAKE_CUDA_ARCHITECTURES="75;86" .. # Multiple architectures
+        #   CUDA_ARCHITECTURES=75 cmake ..              # Environment variable
+
+        if(DEFINED ENV{CUDA_ARCHITECTURES})
+            # User-specified architectures via environment variable
+            set(CMAKE_CUDA_ARCHITECTURES $ENV{CUDA_ARCHITECTURES} CACHE STRING "CUDA architectures" FORCE)
+            message(STATUS "CUDA architectures from environment: ${CMAKE_CUDA_ARCHITECTURES}")
+        elseif(CMAKE_CUDA_ARCHITECTURES STREQUAL "native")
+            # Auto-detect current GPU architecture
+            # This produces the smallest binary and fastest build
+            execute_process(
+                COMMAND nvidia-smi --query-gpu=compute_cap --format=csv,noheader
+                OUTPUT_VARIABLE GPU_COMPUTE_CAP
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                RESULT_VARIABLE NVIDIA_SMI_RESULT
+                ERROR_QUIET
+            )
+            if(NVIDIA_SMI_RESULT EQUAL 0 AND GPU_COMPUTE_CAP)
+                # Convert "7.5" to "75"
+                string(REPLACE "." "" GPU_ARCH "${GPU_COMPUTE_CAP}")
+                # Take first GPU if multiple
+                string(REGEX REPLACE "\n.*" "" GPU_ARCH "${GPU_ARCH}")
+                set(CMAKE_CUDA_ARCHITECTURES ${GPU_ARCH} CACHE STRING "CUDA architectures" FORCE)
+                message(STATUS "CUDA native architecture detected: ${CMAKE_CUDA_ARCHITECTURES}")
+            else()
+                message(WARNING "Could not detect GPU architecture, falling back to defaults")
+                set(CMAKE_CUDA_ARCHITECTURES 75 80 86 87 89 90 CACHE STRING "CUDA architectures" FORCE)
+            endif()
+        elseif(NOT CMAKE_CUDA_ARCHITECTURES)
+            # Default: Turing + Ampere + Ada + Hopper (including Jetson Orin sm_87)
+            set(CMAKE_CUDA_ARCHITECTURES 75 80 86 87 89 90 CACHE STRING "CUDA architectures")
+            message(STATUS "CUDA architectures (default): ${CMAKE_CUDA_ARCHITECTURES}")
+        else()
+            message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+        endif()
 
         # CUDA C++ standard (match project C++ standard)
         set(CMAKE_CUDA_STANDARD 14)

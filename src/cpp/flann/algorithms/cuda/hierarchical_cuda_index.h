@@ -305,6 +305,58 @@ public:
             uploadToGPU();
         }
 
+        // Pre-allocate persistent query/result buffers to eliminate per-search cudaMalloc overhead
+        // Use 20K as default max batch size (21MB GPU memory, trivial vs typical GPU)
+        const size_t DEFAULT_MAX_QUERIES = 20000;
+        const size_t DEFAULT_MAX_KNN = 128;
+
+        gpu_buffer_max_queries_ = DEFAULT_MAX_QUERIES;
+        gpu_buffer_max_knn_ = std::max(static_cast<size_t>(knn), DEFAULT_MAX_KNN);
+
+        // Pad to multiple of 4 to match OpenCL exactly
+        int padded_bytes = 4 * ((this->veclen_ + 3) / 4);
+
+        // Pre-allocate GPU buffers
+        gpu_query_buffer_.resize(gpu_buffer_max_queries_ * padded_bytes);
+        gpu_indices_buffer_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
+        gpu_dists_buffer_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
+
+        // Pre-allocate pinned host staging buffers (2-3x faster DMA transfers)
+        pinned_query_staging_.resize(gpu_buffer_max_queries_ * padded_bytes);
+        pinned_indices_staging_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
+        pinned_dists_staging_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
+
+        // Warmup kernel launch to trigger JIT compilation during setup
+        // This moves ~37ms one-time cost from first search to buildCUDAKnnSearch()
+        {
+            // Create dummy query (zeros)
+            std::vector<ElementType> dummy_query(padded_bytes, 0);
+            gpu_query_buffer_.upload(dummy_query.data(), padded_bytes);
+
+            // Launch kernel with 1 query to trigger JIT compilation
+            int num_nodes = gpu_nodes_.count();
+            bool success = launch_hierarchical_search_cooperative(
+                reinterpret_cast<const unsigned char*>(gpu_dataset_.get()),
+                reinterpret_cast<const unsigned char*>(gpu_query_buffer_.get()),
+                gpu_nodes_.get(),
+                reinterpret_cast<const unsigned char*>(gpu_pivots_.get()),
+                gpu_node_index_.get(),
+                gpu_indices_buffer_.get(),
+                gpu_dists_buffer_.get(),
+                1,                     // 1 query for warmup
+                padded_bytes,
+                this->veclen_,
+                num_nodes,
+                knn,
+                gpu_num_trees_,
+                this->branching_
+            );
+            if (success) {
+                // Wait for JIT compilation to complete
+                cudaDeviceSynchronize();
+            }
+        }
+
         gpu_search_ready_ = true;
     }
 
@@ -345,6 +397,18 @@ public:
         std::swap(gpu_dataset_, other.gpu_dataset_);
         std::swap(gpu_dataset_indices_, other.gpu_dataset_indices_);
         std::swap(gpu_node_index_, other.gpu_node_index_);
+
+        // Swap persistent query/result buffers
+        std::swap(gpu_query_buffer_, other.gpu_query_buffer_);
+        std::swap(gpu_indices_buffer_, other.gpu_indices_buffer_);
+        std::swap(gpu_dists_buffer_, other.gpu_dists_buffer_);
+        std::swap(gpu_buffer_max_queries_, other.gpu_buffer_max_queries_);
+        std::swap(gpu_buffer_max_knn_, other.gpu_buffer_max_knn_);
+
+        // Swap pinned host staging buffers
+        std::swap(pinned_query_staging_, other.pinned_query_staging_);
+        std::swap(pinned_indices_staging_, other.pinned_indices_staging_);
+        std::swap(pinned_dists_staging_, other.pinned_dists_staging_);
     }
 
     // ========================================================================
@@ -440,6 +504,18 @@ protected:
         gpu_dataset_ = CUDABuffer<ElementType>();
         gpu_dataset_indices_ = CUDABuffer<int>();
         gpu_node_index_ = CUDABuffer<int>();
+
+        // Free persistent query/result buffers
+        gpu_query_buffer_ = CUDABuffer<ElementType>();
+        gpu_indices_buffer_ = CUDABuffer<int>();
+        gpu_dists_buffer_ = CUDABuffer<int>();
+        gpu_buffer_max_queries_ = 0;
+        gpu_buffer_max_knn_ = 0;
+
+        // Free pinned host staging buffers
+        pinned_query_staging_.resize(0);
+        pinned_indices_staging_.resize(0);
+        pinned_dists_staging_.resize(0);
 
         gpu_initialized_ = false;
         gpu_search_ready_ = false;
@@ -645,7 +721,6 @@ protected:
         gpu_dataset_indices_.upload(dataset_indices.data(), dataset_indices.size());
         gpu_node_index_.upload(hybrid_node_index.data(), hybrid_size);  // CRITICAL: Upload hybrid array
 
-
         gpu_initialized_ = true;
     }
 
@@ -725,34 +800,44 @@ protected:
         // Must use identical formula for comparison
         int padded_bytes = 4 * ((this->veclen_ + 3) / 4);
 
-        // Upload queries to GPU
-        CUDABuffer<ElementType> queries_gpu(num_queries * padded_bytes);
-        std::vector<ElementType> padded_queries(num_queries * padded_bytes, 0);
+        // Resize persistent buffers if needed (rare path - only if exceeding pre-allocated capacity)
+        if (num_queries > gpu_buffer_max_queries_ || knn > gpu_buffer_max_knn_) {
+            gpu_buffer_max_queries_ = std::max(num_queries, gpu_buffer_max_queries_);
+            gpu_buffer_max_knn_ = std::max(knn, gpu_buffer_max_knn_);
+            gpu_query_buffer_.resize(gpu_buffer_max_queries_ * padded_bytes);
+            gpu_indices_buffer_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
+            gpu_dists_buffer_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
+            pinned_query_staging_.resize(gpu_buffer_max_queries_ * padded_bytes);
+            pinned_indices_staging_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
+            pinned_dists_staging_.resize(gpu_buffer_max_queries_ * gpu_buffer_max_knn_);
+        }
 
-        // Pad queries to padded_bytes
+        // Pad queries into pinned host buffer (fast DMA transfer)
+        ElementType* query_ptr = pinned_query_staging_.get();
         for (size_t i = 0; i < num_queries; ++i) {
-            std::memcpy(&padded_queries[i * padded_bytes],
+            std::memcpy(query_ptr + i * padded_bytes,
                        queries[i],
                        this->veclen_ * sizeof(ElementType));
-            // Padding bytes remain zero from initialization
+            // Clear padding bytes (needed since buffer is reused)
+            std::memset(query_ptr + i * padded_bytes + this->veclen_,
+                       0,
+                       (padded_bytes - this->veclen_) * sizeof(ElementType));
         }
-        queries_gpu.upload(padded_queries.data(), num_queries * padded_bytes);
 
-        // Allocate result buffers on GPU
-        CUDABuffer<int> indices_gpu(num_queries * knn);
-        CUDABuffer<int> dists_gpu(num_queries * knn);
+        // Upload from pinned memory (2-3x faster DMA transfer)
+        gpu_query_buffer_.upload(query_ptr, num_queries * padded_bytes);
 
-        // PHASE 2: Run cooperative kernel to capture debug output for comparison
+        // Run cooperative kernel using persistent GPU buffers
         int num_nodes = gpu_nodes_.count();
 
         bool success = launch_hierarchical_search_cooperative(
             reinterpret_cast<const unsigned char*>(gpu_dataset_.get()),
-            reinterpret_cast<const unsigned char*>(queries_gpu.get()),
+            reinterpret_cast<const unsigned char*>(gpu_query_buffer_.get()),  // Persistent buffer
             gpu_nodes_.get(),
             reinterpret_cast<const unsigned char*>(gpu_pivots_.get()),
             gpu_node_index_.get(),  // CRITICAL: Pass nodeIndex indirection array
-            indices_gpu.get(),
-            dists_gpu.get(),
+            gpu_indices_buffer_.get(),  // Persistent buffer
+            gpu_dists_buffer_.get(),    // Persistent buffer
             num_queries,
             padded_bytes,      // For array indexing (data stored with padding)
             this->veclen_,     // For Hamming distance (actual descriptor length)
@@ -766,24 +851,23 @@ protected:
             throw FLANNException("Unsupported k value for GPU search");
         }
 
-        // Check for kernel errors
+        // Check for kernel errors and wait for completion
         CUDA_CHECK_LAST();
         CUDA_CHECK(cudaDeviceSynchronize());
 
-        // Download results
-        std::vector<int> indices_host(num_queries * knn);
-        std::vector<int> dists_host(num_queries * knn);
-        indices_gpu.download(indices_host.data(), num_queries * knn);
-        dists_gpu.download(dists_host.data(), num_queries * knn);
+        // Download results to pinned host buffers (2-3x faster DMA transfer)
+        int* indices_ptr = pinned_indices_staging_.get();
+        int* dists_ptr = pinned_dists_staging_.get();
+        gpu_indices_buffer_.download(indices_ptr, num_queries * knn);
+        gpu_dists_buffer_.download(dists_ptr, num_queries * knn);
 
         // Copy to output matrices (convert int -> size_t for indices, int -> DistanceType for dists)
         for (size_t i = 0; i < num_queries; ++i) {
             for (size_t j = 0; j < knn; ++j) {
-                indices[i][j] = static_cast<size_t>(indices_host[i * knn + j]);
-                dists[i][j] = static_cast<DistanceType>(dists_host[i * knn + j]);
+                indices[i][j] = static_cast<size_t>(indices_ptr[i * knn + j]);
+                dists[i][j] = static_cast<DistanceType>(dists_ptr[i * knn + j]);
             }
         }
-
 
         return num_queries;
     }
@@ -803,6 +887,18 @@ private:
     mutable CUDABuffer<ElementType> gpu_dataset_;      ///< Dataset descriptors (padded)
     mutable CUDABuffer<int> gpu_dataset_indices_;      ///< Leaf node dataset indices
     mutable CUDABuffer<int> gpu_node_index_;           ///< Indirection array matching OpenCL (pointers not indices)
+
+    // Persistent query/result buffers for search (reused across searches to eliminate cudaMalloc overhead)
+    mutable CUDABuffer<ElementType> gpu_query_buffer_;  ///< Reusable query upload buffer
+    mutable CUDABuffer<int> gpu_indices_buffer_;        ///< Reusable results buffer
+    mutable CUDABuffer<int> gpu_dists_buffer_;          ///< Reusable distances buffer
+    mutable size_t gpu_buffer_max_queries_ = 0;         ///< Current query buffer capacity
+    mutable size_t gpu_buffer_max_knn_ = 0;             ///< Current k capacity
+
+    // Pinned host-side staging buffers for fast DMA transfers (2-3x faster than pageable)
+    mutable PinnedBuffer<ElementType> pinned_query_staging_;  ///< Pinned query staging buffer
+    mutable PinnedBuffer<int> pinned_indices_staging_;        ///< Pinned results staging buffer
+    mutable PinnedBuffer<int> pinned_dists_staging_;          ///< Pinned distances staging buffer
 };
 
 } // namespace cuda

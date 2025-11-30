@@ -52,22 +52,13 @@ __device__ inline void bitonic_merge(
         int valA = heap_ids[pos];
         int valB = heap_ids[pos + stride];
 
-        // DETERMINISTIC TIE-BREAKING FIX:
-        // When distances are equal, use neighbor ID as secondary sort key
-        // This ensures consistent ordering and prevents losing valid neighbors
-        //
-        // Primary comparison: distance
-        // Secondary comparison (when distances equal): neighbor ID
-        // This matches the expected behavior for k-NN search where ties
-        // should be broken consistently
-        bool should_swap = (keyA < keyB) == dir;
+        // Match OpenCL behavior: simple comparison without tie-breaking
+        // OpenCL: if ((keyA < keyB) == dir) { swap }
+        // Note: valA, valB loaded but not used for tie-breaking (matches OpenCL)
+        (void)valA;  // Suppress unused variable warning
+        (void)valB;
 
-        // Tie-breaking: when distances are equal, compare IDs
-        if (keyA == keyB) {
-            should_swap = (valA < valB) == dir;
-        }
-
-        if (should_swap) {
+        if ((keyA < keyB) == dir) {
             // Swap distances
             heap_dists[pos] = keyB;
             heap_dists[pos + stride] = keyA;

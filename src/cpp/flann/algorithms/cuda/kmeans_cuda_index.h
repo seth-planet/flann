@@ -327,8 +327,71 @@ public:
         // Mark GPU as ready for searches
         gpu_search_ready_ = true;
 
-        // TODO (future optimization): Compile kernels with knn/params baked in
-        // For now, kernels are compiled on-demand in knnSearchGPU()
+        // ========================================================================
+        // WARMUP: Trigger JIT compilation during setup (OpenCL parity)
+        // ========================================================================
+        // CUDA kernels are JIT-compiled on first launch, causing ~40ms overhead.
+        // By running a single warmup query during setup, we amortize this cost
+        // and make the first real search as fast as subsequent ones.
+        warmupKernel(knn, params);
+    }
+
+    /**
+     * @brief Warmup kernel to trigger JIT compilation
+     *
+     * Runs a single-query search to force kernel compilation.
+     * The result is discarded - this is purely to amortize JIT overhead.
+     */
+    void warmupKernel(int knn, const SearchParams& params)
+    {
+        // Create a dummy single-query search using first dataset point
+        if (this->size_ == 0 || this->veclen_ == 0) return;
+
+        // Use first data point as warmup query
+        std::vector<ElementType> warmup_query(padded_veclen_, 0);
+        for (size_t i = 0; i < this->veclen_; ++i) {
+            warmup_query[i] = this->points_[0][i];
+        }
+
+        // Allocate minimal buffers
+        CUDABuffer<ElementType> queries_gpu(padded_veclen_);
+        queries_gpu.upload(warmup_query.data(), padded_veclen_);
+
+        CUDABuffer<int> indices_gpu(knn);
+        CUDABuffer<float> dists_gpu(knn);
+
+        // Calculate parameters
+        int max_checks = params.checks > 0 ? params.checks : 256;
+        int heap_size = calculateHeapSize(knn, max_checks);
+        int loc_size = getCUDALocSize(0);
+
+        // Launch kernel (triggers JIT compilation)
+        bool use_cooperative = (heap_size <= loc_size && this->branching_ == 32);
+        if (use_cooperative) {
+            // Cooperative kernel warmup
+            dim3 grid(1);
+            dim3 block(loc_size);
+
+            launch_kmeans_search_cooperative<5>(
+                (const float*)dataset_gpu_.get(),
+                (const float*)queries_gpu.get(),
+                node_index_gpu_.get(),
+                (const float*)tree_pivots_gpu_.get(),
+                node_variance_gpu_.get(),
+                indices_gpu.get(),
+                dists_gpu.get(),
+                1,  // num_queries
+                padded_veclen_,
+                num_nodes_,
+                heap_size,
+                loc_size,
+                this->branching_,
+                this->cb_index_
+            );
+        }
+
+        // Sync to ensure kernel completes (and JIT finishes)
+        cudaDeviceSynchronize();
     }
 
     /**
@@ -534,18 +597,6 @@ protected:
         bool branch_ok = (this->branching_ == 32 || this->branching_ == 64);
         bool use_cooperative = heap_ok && branch_ok;
 
-        std::cout << "[CUDA K-Means] Kernel selection:\n"
-                  << "  branching=" << this->branching_
-                  << ", heap_size=" << heap_size
-                  << ", loc_size=" << loc_size << "\n"
-                  << "  heap_ok=" << (heap_ok ? "true" : "false")
-                  << ", branch_ok=" << (branch_ok ? "true" : "false")
-                  << ", use_cooperative=" << (use_cooperative ? "true" : "false") << "\n"
-                  << "  k=" << knn
-                  << ", max_checks=" << max_checks
-                  << ", avgNodes=" << getAvgNodesNeeded(max_checks)
-                  << ", cudaKnn=" << getCUDAknn(knn) << "\n";
-
         // Launch kernel (only works with float, but must compile for all types)
         bool success = false;
         if (!std::is_same<ElementType, float>::value) {
@@ -556,8 +607,6 @@ protected:
 
         if (use_cooperative) {
             // Use cooperative kernel (LOC_SIZE threads per query)
-            std::cout << "[CUDA K-Means] Using cooperative kernel (LOC_SIZE=" << loc_size << ")\n";
-
             // Dispatch based on k value (template parameter)
             if (knn == 1) {
                 success = launch_kmeans_search_cooperative<1>(
@@ -662,9 +711,7 @@ protected:
                     this->cb_index_
                 );
             } else {
-                // Unsupported k for cooperative kernel, fall back to single-threaded
-                std::cout << "[CUDA K-Means] Unsupported k=" << knn << " for cooperative kernel, "
-                          << "falling back to single-threaded\n";
+                // Unsupported k for cooperative kernel
                 use_cooperative = false;
             }
         }
@@ -745,6 +792,24 @@ protected:
         if (gpu_initialized_) return;
         if (!this->root_) {
             throw FLANNException("Cannot upload to GPU: tree not built");
+        }
+
+        // ========================================================================
+        // MEMORY POOL PRE-ALLOCATION (Performance Optimization)
+        // ========================================================================
+        // The first cudaMalloc call initializes the CUDA memory allocator, which
+        // takes ~300-400ms on cold start. By doing a dummy allocation first,
+        // we amortize this cost during setup rather than the first search.
+        //
+        // This is NOT JIT compilation - the binary contains native sm_XX code.
+        // This is CUDA runtime initialization (context creation, memory pools).
+        {
+            void* dummy = nullptr;
+            cudaError_t err = cudaMalloc(&dummy, 1024);  // 1KB dummy allocation
+            if (err == cudaSuccess && dummy) {
+                cudaFree(dummy);
+            }
+            // Ignore errors - this is just warmup, actual allocations will fail properly
         }
 
         // Calculate padded veclen (round up to multiple of 4 for float4 loads)
@@ -927,12 +992,6 @@ protected:
                 }
             }
         }
-
-        // Debug output
-        std::cout << "[CUDA K-Means] Flat array tree built:\n"
-                  << "  Total nodes: " << num_nodes << "\n"
-                  << "  Unified array size: " << unified_size << "\n"
-                  << "  Branching factor: " << this->branching_ << "\n";
 
         // Verify arithmetic layout (optional debug check)
         for (const auto& [node, idx] : node_to_index) {

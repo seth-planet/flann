@@ -32,7 +32,6 @@
 #ifdef FLANN_USE_CUDA
 
 #include <cuda_runtime.h>
-#include <cstdio>  // For printf in device code
 
 namespace flann {
 namespace cuda {
@@ -340,11 +339,6 @@ __device__ inline int compute_hamming_optimal(
     return dist;
 }
 
-// ========================================================================
-// PHASE 3: Distance Computation Verification (Debug)
-// ========================================================================
-static __device__ int global_dist_counter = 0;
-
 /**
  * @brief Default Hamming distance function (uses optimal implementation)
  *
@@ -356,22 +350,7 @@ __device__ inline int compute_hamming_distance(
     const unsigned char* b,
     int bytes
 ) {
-    int dist = compute_hamming_optimal(a, b, bytes);
-
-    // PHASE 3: Log first 10 distance computations for query 0
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-        int counter = atomicAdd(&global_dist_counter, 1);
-        if (counter < 10) {
-            printf("[PHASE 3 DIST %d] vec1[0-3]=%02x %02x %02x %02x, "
-                   "vec2[0-3]=%02x %02x %02x %02x, hamming=%d\n",
-                   counter,
-                   a[0], a[1], a[2], a[3],
-                   b[0], b[1], b[2], b[3],
-                   dist);
-        }
-    }
-
-    return dist;
+    return compute_hamming_optimal(a, b, bytes);
 }
 
 } // namespace cuda

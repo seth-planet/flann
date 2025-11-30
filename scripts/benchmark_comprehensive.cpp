@@ -36,18 +36,22 @@ struct BenchmarkConfig {
     int trees;                // Number of trees (hierarchical)
     int leaf_size;            // Leaf node size
     int num_runs;             // Number of runs for averaging
+    int warmup_runs;          // Warmup runs (discarded from timing)
     bool run_cpu;
     bool run_opencl;
     bool run_cuda;
     bool run_kmeans;          // Also test K-Means algorithms
+    bool is_binary;           // Binary descriptors (Hamming) or float (L2)
+    float cb_index;           // K-Means cb_index parameter
     string output_prefix;
 
     BenchmarkConfig() :
         dataset_file("datasets/binary1M_512bit.h5"),
         k(16), checks(128), branching(32), trees(4),
-        leaf_size(100), num_runs(3),
+        leaf_size(100), num_runs(5), warmup_runs(1),
         run_cpu(true), run_opencl(true), run_cuda(true), run_kmeans(false),
-        output_prefix("benchmark_results/results_1M_512bit") {}
+        is_binary(true), cb_index(0.2f),
+        output_prefix("benchmark_results/results") {}
 };
 
 // ============================================================================
@@ -461,6 +465,286 @@ BenchmarkResult benchmark_cuda_hierarchical(
 #endif
 
 // ============================================================================
+// K-Means CPU Benchmark (Float/L2)
+// ============================================================================
+
+BenchmarkResult benchmark_cpu_kmeans(
+    const Matrix<float>& dataset,
+    const Matrix<float>& queries,
+    const Matrix<size_t>& gt_indices,
+    const BenchmarkConfig& config)
+{
+    cout << "\n" << string(70, '=') << endl;
+    cout << "CPU K-Means Tree Benchmark" << endl;
+    cout << string(70, '=') << endl;
+
+    BenchmarkResult result;
+    result.implementation = "CPU";
+    result.algorithm = "K-Means";
+
+    vector<double> build_times, search_times;
+
+    KMeansIndexParams params(
+        config.branching,
+        11,  // iterations
+        FLANN_CENTERS_RANDOM,
+        config.cb_index
+    );
+
+    int total_runs = config.warmup_runs + config.num_runs;
+    for (int run = 0; run < total_runs; run++) {
+        bool is_warmup = (run < config.warmup_runs);
+        if (is_warmup) {
+            cout << "\nWarmup run " << (run + 1) << "/" << config.warmup_runs << " (discarded):" << endl;
+        } else {
+            cout << "\nRun " << (run - config.warmup_runs + 1) << "/" << config.num_runs << ":" << endl;
+        }
+
+        Timer timer;
+
+        // Build index
+        cout << "  Building index..." << flush;
+        timer.reset();
+        Index<L2<float>> index(dataset, params);
+        index.buildIndex();
+        double build_time = timer.elapsed();
+        if (!is_warmup) build_times.push_back(build_time);
+        cout << " " << fixed << setprecision(3) << build_time << "s" << endl;
+
+        // Search
+        Matrix<size_t> indices(new size_t[queries.rows * config.k], queries.rows, config.k);
+        Matrix<float> distances(new float[queries.rows * config.k], queries.rows, config.k);
+
+        cout << "  Searching..." << flush;
+        timer.reset();
+        index.knnSearch(queries, indices, distances, config.k, SearchParams(config.checks));
+        double search_time = timer.elapsed();
+        if (!is_warmup) search_times.push_back(search_time);
+        cout << " " << fixed << setprecision(3) << search_time << "s" << endl;
+
+        // Calculate precision (last run only)
+        if (run == total_runs - 1) {
+            result.precision = calculate_precision(gt_indices, indices, config.k);
+            cout << "  Precision: " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
+        }
+
+        delete[] indices.ptr();
+        delete[] distances.ptr();
+    }
+
+    result.build_time = Stats(build_times);
+    result.search_time = Stats(search_times);
+    result.gpu_upload_time = Stats();
+    result.total_time = result.build_time.mean + result.search_time.mean;
+    result.queries_per_sec = queries.rows / result.search_time.mean;
+    result.cpu_memory_mb = (dataset.rows * dataset.cols * sizeof(float)) / (1024 * 1024);
+    result.gpu_memory_mb = 0;
+
+    cout << "\nSummary:" << endl;
+    cout << "  Build time:    " << result.build_time.format() << "s" << endl;
+    cout << "  Search time:   " << result.search_time.format() << "s" << endl;
+    cout << "  Per-query:     " << fixed << setprecision(2) << (result.search_time.mean * 1e6 / queries.rows) << " µs" << endl;
+    cout << "  Throughput:    " << fixed << setprecision(1) << result.queries_per_sec << " queries/sec" << endl;
+    cout << "  Precision:     " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
+
+    return result;
+}
+
+// ============================================================================
+// K-Means OpenCL Benchmark
+// ============================================================================
+
+#ifdef FLANN_USE_OPENCL
+BenchmarkResult benchmark_opencl_kmeans(
+    const Matrix<float>& dataset,
+    const Matrix<float>& queries,
+    const Matrix<size_t>& gt_indices,
+    const BenchmarkConfig& config)
+{
+    cout << "\n" << string(70, '=') << endl;
+    cout << "OpenCL K-Means Tree Benchmark" << endl;
+    cout << string(70, '=') << endl;
+
+    BenchmarkResult result;
+    result.implementation = "OpenCL";
+    result.algorithm = "K-Means";
+
+    vector<double> build_times, upload_times, search_times;
+
+    KMeansOpenCLIndexParams params(
+        config.branching,
+        11,  // iterations
+        FLANN_CENTERS_RANDOM,
+        config.cb_index
+    );
+
+    int total_runs = config.warmup_runs + config.num_runs;
+    for (int run = 0; run < total_runs; run++) {
+        bool is_warmup = (run < config.warmup_runs);
+        if (is_warmup) {
+            cout << "\nWarmup run " << (run + 1) << "/" << config.warmup_runs << " (discarded):" << endl;
+        } else {
+            cout << "\nRun " << (run - config.warmup_runs + 1) << "/" << config.num_runs << ":" << endl;
+        }
+
+        Timer timer;
+
+        // Build index (CPU)
+        cout << "  Building index (CPU)..." << flush;
+        timer.reset();
+        Index<L2<float>> index(dataset, params);
+        index.buildIndex();
+        double build_time = timer.elapsed();
+        if (!is_warmup) build_times.push_back(build_time);
+        cout << " " << fixed << setprecision(3) << build_time << "s" << endl;
+
+        // GPU upload
+        cout << "  Uploading to GPU..." << flush;
+        timer.reset();
+        index.buildCLKnnSearch(config.k, SearchParams(config.checks));
+        double upload_time = timer.elapsed();
+        if (!is_warmup) upload_times.push_back(upload_time);
+        cout << " " << fixed << setprecision(3) << upload_time << "s" << endl;
+
+        // Search (GPU)
+        Matrix<size_t> indices(new size_t[queries.rows * config.k], queries.rows, config.k);
+        Matrix<float> distances(new float[queries.rows * config.k], queries.rows, config.k);
+
+        cout << "  Searching (GPU)..." << flush;
+        timer.reset();
+        index.knnSearch(queries, indices, distances, config.k, SearchParams(config.checks));
+        double search_time = timer.elapsed();
+        if (!is_warmup) search_times.push_back(search_time);
+        cout << " " << fixed << setprecision(3) << search_time << "s" << endl;
+
+        // Calculate precision (last run only)
+        if (run == total_runs - 1) {
+            result.precision = calculate_precision(gt_indices, indices, config.k);
+            cout << "  Precision: " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
+        }
+
+        delete[] indices.ptr();
+        delete[] distances.ptr();
+    }
+
+    result.build_time = Stats(build_times);
+    result.gpu_upload_time = Stats(upload_times);
+    result.search_time = Stats(search_times);
+    result.total_time = result.build_time.mean + result.gpu_upload_time.mean + result.search_time.mean;
+    result.queries_per_sec = queries.rows / result.search_time.mean;
+    result.cpu_memory_mb = (dataset.rows * dataset.cols * sizeof(float)) / (1024 * 1024);
+    result.gpu_memory_mb = result.cpu_memory_mb * 2;  // Estimate
+
+    cout << "\nSummary:" << endl;
+    cout << "  Build time:    " << result.build_time.format() << "s" << endl;
+    cout << "  Upload time:   " << result.gpu_upload_time.format() << "s" << endl;
+    cout << "  Search time:   " << result.search_time.format() << "s" << endl;
+    cout << "  Per-query:     " << fixed << setprecision(2) << (result.search_time.mean * 1e6 / queries.rows) << " µs" << endl;
+    cout << "  Throughput:    " << fixed << setprecision(1) << result.queries_per_sec << " queries/sec" << endl;
+    cout << "  Precision:     " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
+
+    return result;
+}
+#endif
+
+// ============================================================================
+// K-Means CUDA Benchmark
+// ============================================================================
+
+#ifdef FLANN_USE_CUDA
+BenchmarkResult benchmark_cuda_kmeans(
+    const Matrix<float>& dataset,
+    const Matrix<float>& queries,
+    const Matrix<size_t>& gt_indices,
+    const BenchmarkConfig& config)
+{
+    cout << "\n" << string(70, '=') << endl;
+    cout << "CUDA K-Means Tree Benchmark" << endl;
+    cout << string(70, '=') << endl;
+
+    BenchmarkResult result;
+    result.implementation = "CUDA";
+    result.algorithm = "K-Means";
+
+    vector<double> build_times, upload_times, search_times;
+
+    KMeansCUDAIndexParams params(
+        config.branching,
+        11,  // iterations
+        FLANN_CENTERS_RANDOM,
+        config.cb_index
+    );
+
+    int total_runs = config.warmup_runs + config.num_runs;
+    for (int run = 0; run < total_runs; run++) {
+        bool is_warmup = (run < config.warmup_runs);
+        if (is_warmup) {
+            cout << "\nWarmup run " << (run + 1) << "/" << config.warmup_runs << " (discarded):" << endl;
+        } else {
+            cout << "\nRun " << (run - config.warmup_runs + 1) << "/" << config.num_runs << ":" << endl;
+        }
+
+        Timer timer;
+
+        // Build index (CPU)
+        cout << "  Building index (CPU)..." << flush;
+        timer.reset();
+        Index<L2<float>> index(dataset, params);
+        index.buildIndex();
+        double build_time = timer.elapsed();
+        if (!is_warmup) build_times.push_back(build_time);
+        cout << " " << fixed << setprecision(3) << build_time << "s" << endl;
+
+        // GPU upload
+        cout << "  Uploading to GPU..." << flush;
+        timer.reset();
+        index.buildCUDAKnnSearch(config.k, SearchParams(config.checks));
+        double upload_time = timer.elapsed();
+        if (!is_warmup) upload_times.push_back(upload_time);
+        cout << " " << fixed << setprecision(3) << upload_time << "s" << endl;
+
+        // Search (GPU)
+        Matrix<size_t> indices(new size_t[queries.rows * config.k], queries.rows, config.k);
+        Matrix<float> distances(new float[queries.rows * config.k], queries.rows, config.k);
+
+        cout << "  Searching (GPU)..." << flush;
+        timer.reset();
+        index.knnSearch(queries, indices, distances, config.k, SearchParams(config.checks));
+        double search_time = timer.elapsed();
+        if (!is_warmup) search_times.push_back(search_time);
+        cout << " " << fixed << setprecision(3) << search_time << "s" << endl;
+
+        // Calculate precision (last run only)
+        if (run == total_runs - 1) {
+            result.precision = calculate_precision(gt_indices, indices, config.k);
+            cout << "  Precision: " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
+        }
+
+        delete[] indices.ptr();
+        delete[] distances.ptr();
+    }
+
+    result.build_time = Stats(build_times);
+    result.gpu_upload_time = Stats(upload_times);
+    result.search_time = Stats(search_times);
+    result.total_time = result.build_time.mean + result.gpu_upload_time.mean + result.search_time.mean;
+    result.queries_per_sec = queries.rows / result.search_time.mean;
+    result.cpu_memory_mb = (dataset.rows * dataset.cols * sizeof(float)) / (1024 * 1024);
+    result.gpu_memory_mb = result.cpu_memory_mb * 2;  // Estimate
+
+    cout << "\nSummary:" << endl;
+    cout << "  Build time:    " << result.build_time.format() << "s" << endl;
+    cout << "  Upload time:   " << result.gpu_upload_time.format() << "s" << endl;
+    cout << "  Search time:   " << result.search_time.format() << "s" << endl;
+    cout << "  Per-query:     " << fixed << setprecision(2) << (result.search_time.mean * 1e6 / queries.rows) << " µs" << endl;
+    cout << "  Throughput:    " << fixed << setprecision(1) << result.queries_per_sec << " queries/sec" << endl;
+    cout << "  Precision:     " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
+
+    return result;
+}
+#endif
+
+// ============================================================================
 // Results Export
 // ============================================================================
 
@@ -543,20 +827,44 @@ void print_summary_table(const vector<BenchmarkResult>& results)
 // Main
 // ============================================================================
 
+void print_usage(const char* program) {
+    cout << "Usage: " << program << " [dataset.h5] [options]\n\n"
+         << "Options:\n"
+         << "  --k=N          Number of nearest neighbors (default: 16)\n"
+         << "  --checks=N     Search accuracy parameter (default: 128)\n"
+         << "  --runs=N       Number of timed runs (default: 5)\n"
+         << "  --warmup=N     Number of warmup runs (default: 1)\n"
+         << "  --branching=N  Tree branching factor (default: 32)\n"
+         << "  --cb-index=F   K-Means cb_index parameter (default: 0.2)\n"
+         << "  --kmeans       Run K-Means benchmarks (float/L2 data)\n"
+         << "  --cpu-only     Only run CPU benchmarks\n"
+         << "  --gpu-only     Only run GPU benchmarks\n"
+         << "  --cuda-only    Only run CUDA benchmarks\n"
+         << "  --opencl-only  Only run OpenCL benchmarks\n"
+         << "  --help         Show this help message\n\n"
+         << "Examples:\n"
+         << "  " << program << " datasets/binary1M_512bit.h5 --k=16 --runs=5\n"
+         << "  " << program << " datasets/sift100K.h5 --kmeans --k=5 --checks=96\n";
+}
+
 int main(int argc, char** argv)
 {
-    cout << string(70, '=') << endl;
-    cout << "FLANN Comprehensive GPU Benchmark Suite" << endl;
-    cout << "1M Points, 512-bit Binary Vectors (Hamming Distance)" << endl;
-    cout << string(70, '=') << endl;
-
     BenchmarkConfig config;
 
     // Parse command-line arguments
     for (int i = 1; i < argc; i++) {
         string arg = argv[i];
-        if (arg.find(".h5") != string::npos) {
+        if (arg == "--help" || arg == "-h") {
+            print_usage(argv[0]);
+            return 0;
+        }
+        else if (arg.find(".h5") != string::npos) {
             config.dataset_file = arg;
+            // Auto-detect binary vs float
+            if (arg.find("sift") != string::npos || arg.find("float") != string::npos) {
+                config.is_binary = false;
+                config.run_kmeans = true;  // SIFT implies K-Means
+            }
         }
         else if (arg.find("--k=") == 0) {
             config.k = stoi(arg.substr(4));
@@ -564,91 +872,203 @@ int main(int argc, char** argv)
         else if (arg.find("--checks=") == 0) {
             config.checks = stoi(arg.substr(9));
         }
+        else if (arg.find("--runs=") == 0) {
+            config.num_runs = stoi(arg.substr(7));
+        }
+        else if (arg.find("--warmup=") == 0) {
+            config.warmup_runs = stoi(arg.substr(9));
+        }
+        else if (arg.find("--branching=") == 0) {
+            config.branching = stoi(arg.substr(12));
+        }
+        else if (arg.find("--cb-index=") == 0) {
+            config.cb_index = stof(arg.substr(11));
+        }
+        else if (arg == "--kmeans") {
+            config.run_kmeans = true;
+            config.is_binary = false;
+        }
         else if (arg == "--cpu-only") {
             config.run_opencl = config.run_cuda = false;
         }
         else if (arg == "--gpu-only") {
             config.run_cpu = false;
         }
+        else if (arg == "--cuda-only") {
+            config.run_cpu = config.run_opencl = false;
+            config.run_cuda = true;
+        }
+        else if (arg == "--opencl-only") {
+            config.run_cpu = config.run_cuda = false;
+            config.run_opencl = true;
+        }
     }
+
+    cout << string(70, '=') << endl;
+    cout << "FLANN Comprehensive GPU Benchmark Suite" << endl;
+    if (config.run_kmeans) {
+        cout << "K-Means Tree (L2/Float Distance)" << endl;
+    } else {
+        cout << "Hierarchical Clustering (Hamming/Binary Distance)" << endl;
+    }
+    cout << string(70, '=') << endl;
 
     cout << "\nConfiguration:" << endl;
     cout << "  Dataset:       " << config.dataset_file << endl;
+    cout << "  Mode:          " << (config.run_kmeans ? "K-Means (L2<float>)" : "Hierarchical (Hamming)") << endl;
     cout << "  k:             " << config.k << endl;
     cout << "  checks:        " << config.checks << endl;
     cout << "  branching:     " << config.branching << endl;
-    cout << "  trees:         " << config.trees << endl;
+    if (config.run_kmeans) {
+        cout << "  cb_index:      " << config.cb_index << endl;
+    } else {
+        cout << "  trees:         " << config.trees << endl;
+    }
+    cout << "  warmup_runs:   " << config.warmup_runs << endl;
     cout << "  num_runs:      " << config.num_runs << endl;
+    cout << "  Backends:      "
+         << (config.run_cpu ? "CPU " : "")
+         << (config.run_opencl ? "OpenCL " : "")
+         << (config.run_cuda ? "CUDA " : "") << endl;
 
-    // Load dataset
-    cout << "\nLoading dataset..." << flush;
-    Matrix<unsigned char> dataset;
-    Matrix<unsigned char> queries;
-
-    try {
-        load_from_file(dataset, config.dataset_file, "dataset");
-        load_from_file(queries, config.dataset_file, "query");
-    }
-    catch (const exception& e) {
-        cerr << "\nError loading dataset: " << e.what() << endl;
-        return 1;
-    }
-
-    cout << " done" << endl;
-    cout << "  Index:  " << dataset.rows << " x " << dataset.cols << " bytes" << endl;
-    cout << "  Query:  " << queries.rows << " x " << queries.cols << " bytes" << endl;
-
-    // Compute ground truth
-    Matrix<size_t> gt_indices;
-    Matrix<unsigned int> gt_dists;  // Hamming<unsigned char>::ResultType is unsigned int
-
-    compute_ground_truth<Hamming<unsigned char>>(dataset, queries, gt_indices, gt_dists, config.k);
-
-    // Run benchmarks
     vector<BenchmarkResult> results;
 
-    if (config.run_cpu) {
+    if (config.run_kmeans) {
+        // ============================================
+        // K-Means mode: Load float data
+        // ============================================
+        cout << "\nLoading dataset (float)..." << flush;
+        Matrix<float> dataset;
+        Matrix<float> queries;
+
         try {
-            results.push_back(benchmark_cpu_hierarchical(dataset, queries, gt_indices, config));
+            load_from_file(dataset, config.dataset_file, "dataset");
+            load_from_file(queries, config.dataset_file, "query");
         }
         catch (const exception& e) {
-            cerr << "CPU Hierarchical failed: " << e.what() << endl;
+            cerr << "\nError loading dataset: " << e.what() << endl;
+            return 1;
         }
-    }
+
+        cout << " done" << endl;
+        cout << "  Index:  " << dataset.rows << " x " << dataset.cols << " floats" << endl;
+        cout << "  Query:  " << queries.rows << " x " << queries.cols << " floats" << endl;
+
+        // Compute ground truth
+        Matrix<size_t> gt_indices;
+        Matrix<float> gt_dists;
+        compute_ground_truth<L2<float>>(dataset, queries, gt_indices, gt_dists, config.k);
+
+        // Run K-Means benchmarks
+        if (config.run_cpu) {
+            try {
+                results.push_back(benchmark_cpu_kmeans(dataset, queries, gt_indices, config));
+            }
+            catch (const exception& e) {
+                cerr << "CPU K-Means failed: " << e.what() << endl;
+            }
+        }
 
 #ifdef FLANN_USE_OPENCL
-    if (config.run_opencl) {
-        try {
-            results.push_back(benchmark_opencl_hierarchical(dataset, queries, gt_indices, config));
+        if (config.run_opencl) {
+            try {
+                results.push_back(benchmark_opencl_kmeans(dataset, queries, gt_indices, config));
+            }
+            catch (const exception& e) {
+                cerr << "OpenCL K-Means failed: " << e.what() << endl;
+            }
         }
-        catch (const exception& e) {
-            cerr << "OpenCL Hierarchical failed: " << e.what() << endl;
-        }
-    }
 #endif
 
 #ifdef FLANN_USE_CUDA
-    if (config.run_cuda) {
+        if (config.run_cuda) {
+            try {
+                results.push_back(benchmark_cuda_kmeans(dataset, queries, gt_indices, config));
+            }
+            catch (const exception& e) {
+                cerr << "CUDA K-Means failed: " << e.what() << endl;
+            }
+        }
+#endif
+
+        // Cleanup
+        delete[] dataset.ptr();
+        delete[] queries.ptr();
+        delete[] gt_indices.ptr();
+        delete[] gt_dists.ptr();
+
+    } else {
+        // ============================================
+        // Hierarchical mode: Load binary data
+        // ============================================
+        cout << "\nLoading dataset (binary)..." << flush;
+        Matrix<unsigned char> dataset;
+        Matrix<unsigned char> queries;
+
         try {
-            results.push_back(benchmark_cuda_hierarchical(dataset, queries, gt_indices, config));
+            load_from_file(dataset, config.dataset_file, "dataset");
+            load_from_file(queries, config.dataset_file, "query");
         }
         catch (const exception& e) {
-            cerr << "CUDA Hierarchical failed: " << e.what() << endl;
+            cerr << "\nError loading dataset: " << e.what() << endl;
+            return 1;
         }
-    }
+
+        cout << " done" << endl;
+        cout << "  Index:  " << dataset.rows << " x " << dataset.cols << " bytes" << endl;
+        cout << "  Query:  " << queries.rows << " x " << queries.cols << " bytes" << endl;
+
+        // Compute ground truth
+        Matrix<size_t> gt_indices;
+        Matrix<unsigned int> gt_dists;
+        compute_ground_truth<Hamming<unsigned char>>(dataset, queries, gt_indices, gt_dists, config.k);
+
+        // Run Hierarchical benchmarks
+        if (config.run_cpu) {
+            try {
+                results.push_back(benchmark_cpu_hierarchical(dataset, queries, gt_indices, config));
+            }
+            catch (const exception& e) {
+                cerr << "CPU Hierarchical failed: " << e.what() << endl;
+            }
+        }
+
+#ifdef FLANN_USE_OPENCL
+        if (config.run_opencl) {
+            try {
+                results.push_back(benchmark_opencl_hierarchical(dataset, queries, gt_indices, config));
+            }
+            catch (const exception& e) {
+                cerr << "OpenCL Hierarchical failed: " << e.what() << endl;
+            }
+        }
 #endif
+
+#ifdef FLANN_USE_CUDA
+        if (config.run_cuda) {
+            try {
+                results.push_back(benchmark_cuda_hierarchical(dataset, queries, gt_indices, config));
+            }
+            catch (const exception& e) {
+                cerr << "CUDA Hierarchical failed: " << e.what() << endl;
+            }
+        }
+#endif
+
+        // Cleanup
+        delete[] dataset.ptr();
+        delete[] queries.ptr();
+        delete[] gt_indices.ptr();
+        delete[] gt_dists.ptr();
+    }
 
     // Print summary
     print_summary_table(results);
 
     // Export results
-    export_results_csv(results, config.output_prefix + ".csv");
-
-    // Cleanup
-    delete[] dataset.ptr();
-    delete[] queries.ptr();
-    delete[] gt_indices.ptr();
-    delete[] gt_dists.ptr();
+    string csv_file = config.output_prefix + "_" +
+                      (config.run_kmeans ? "kmeans" : "hierarchical") + ".csv";
+    export_results_csv(results, csv_file);
 
     cout << "\nBenchmark complete!" << endl;
 
