@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8.12)
+cmake_minimum_required(VERSION 3.5...3.28)
 
 if(COMMAND cmake_policy)
     cmake_policy(SET CMP0003 NEW)
@@ -77,10 +77,12 @@ endif()
 
 # find python
 if (BUILD_PYTHON_BINDINGS)
-find_package(PythonInterp)
-if (NOT PYTHON_EXECUTABLE)
-    set(BUILD_PYTHON_BINDINGS OFF)
-endif()
+    find_package(Python COMPONENTS Interpreter)
+    if (NOT Python_EXECUTABLE)
+        set(BUILD_PYTHON_BINDINGS OFF)
+    else()
+        set(PYTHON_EXECUTABLE ${Python_EXECUTABLE})  # For backward compatibility
+    endif()
 endif()
 
 find_hdf5()

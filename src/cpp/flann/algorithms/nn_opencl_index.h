@@ -161,14 +161,17 @@ public:
             cl_context context = NULL;
             cl_int err = CL_SUCCESS;
             // Get the context so we can release it later
+            // Note: Don't throw from destructor (noexcept since C++11)
             err = clGetCommandQueueInfo(cl_cmd_queue_, CL_QUEUE_CONTEXT,
                                         sizeof(context), &context, NULL);
-            HandleFLANNErr(err);
+            // Ignore errors during cleanup - destructor must not throw
 
             clReleaseCommandQueue(cl_cmd_queue_);
             cl_cmd_queue_ = NULL;
 
-            clReleaseContext(context);
+            if (err == CL_SUCCESS && context != NULL) {
+                clReleaseContext(context);
+            }
         }
     }
 

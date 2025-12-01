@@ -201,6 +201,8 @@ inline void* operator new (std::size_t size, flann::PooledAllocator& allocator)
 
 inline void operator delete(void* p, flann::PooledAllocator& allocator)
 {
+    (void)p;         // Unused - pooled allocator doesn't support individual deallocation
+    (void)allocator; // Unused - pooled allocator doesn't support individual deallocation
 }
 
 

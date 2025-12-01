@@ -16,8 +16,8 @@ endif()
 
 find_program(OCT_CMD mkoctfile)
 
-get_property(FLANN_LIB_LOCATION TARGET flann_s PROPERTY LOCATION)
-get_filename_component(FLANN_LIB_PATH ${FLANN_LIB_LOCATION} PATH)
+# Use generator expression instead of deprecated LOCATION property (CMP0026)
+set(FLANN_LIB_PATH $<TARGET_FILE_DIR:flann_s>)
 
 if(MEX_CMD AND MEXEXT_CMD)
 

@@ -51,6 +51,7 @@ ExternalProject_Add(
     URL https://github.com/google/googletest/archive/refs/tags/release-1.12.1.zip
     URL_MD5 2648d4138129812611cf6b6b4b497a3b
     TIMEOUT 10
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     # Force separate output paths for debug and release builds to allow easy
     # identification of correct lib in subsequent TARGET_LINK_LIBRARIES commands
     CMAKE_ARGS -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}

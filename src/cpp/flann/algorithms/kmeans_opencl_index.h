@@ -391,7 +391,7 @@ protected:
                 "-DMAX_CHECKS=%d -DLOC_SIZE=%ld",
                 distTypeName.c_str(), elmTypeName.c_str(),
                 (distTypeName + "4").c_str(), ("convert_" + distTypeName + "4").c_str(),
-                getCLknn(knn), heapSize, this->root_->radius,
+                getCLknn(knn), heapSize, static_cast<double>(this->root_->radius),
                 4*((this->veclen_+3)/4), this->branching_, this->cb_index_,
                 maxChecks, locSize);
 

@@ -34,6 +34,9 @@
 #include <queue>
 #include <vector>
 #include <cuda_runtime.h>
+#ifndef NDEBUG
+#include <atomic>
+#endif
 
 #include "flann/algorithms/kmeans_index.h"
 #include "flann/algorithms/cuda/cuda_utils.h"
@@ -484,13 +487,17 @@ public:
                   size_t knn,
                   const SearchParams& params) const override
     {
-        // Automatic dispatch: GPU if prepared AND k value is supported
-        if (gpu_search_ready_ && isKValueSupportedForGPU(knn)) {
+        if (gpu_search_ready_) {
+            // GPU is ready - require supported k value
+            if (!isKValueSupportedForGPU(knn)) {
+                throw FLANNException("Unsupported k=" + std::to_string(knn) +
+                    " for K-Means CUDA. Supported k values: 1, 5, 10, 20, 50, 100. "
+                    "Use CPU KMeansIndex for other k values.");
+            }
             return knnSearchGPU(queries, indices, dists, knn, params);
-        } else {
-            // Fall back to CPU for unsupported k values or when GPU not ready
-            return BaseClass::knnSearch(queries, indices, dists, knn, params);
         }
+        // GPU not ready - use CPU
+        return BaseClass::knnSearch(queries, indices, dists, knn, params);
     }
 
     /**
@@ -512,13 +519,17 @@ public:
                   size_t knn,
                   const SearchParams& params) const override
     {
-        // Automatic dispatch: GPU if prepared AND k value is supported
-        if (gpu_search_ready_ && isKValueSupportedForGPU(knn)) {
+        if (gpu_search_ready_) {
+            // GPU is ready - require supported k value
+            if (!isKValueSupportedForGPU(knn)) {
+                throw FLANNException("Unsupported k=" + std::to_string(knn) +
+                    " for K-Means CUDA. Supported k values: 1, 5, 10, 20, 50, 100. "
+                    "Use CPU KMeansIndex for other k values.");
+            }
             return knnSearchGPU(queries, indices, dists, (int)knn, params);
-        } else {
-            // Fall back to CPU for unsupported k values or when GPU not ready
-            return BaseClass::knnSearch(queries, indices, dists, knn, params);
         }
+        // GPU not ready - use CPU
+        return BaseClass::knnSearch(queries, indices, dists, knn, params);
     }
 
 protected:
@@ -547,6 +558,20 @@ protected:
         if (!gpu_initialized_) {
             throw FLANNException("Index not built or GPU data not uploaded");
         }
+
+#ifndef NDEBUG
+        // Thread safety check (debug builds only)
+        bool expected = false;
+        if (!search_in_progress_.compare_exchange_strong(expected, true)) {
+            throw FLANNException("Concurrent search detected - KMeansCUDAIndex is NOT thread-safe. "
+                "Each thread should have its own index instance.");
+        }
+        // RAII guard to reset flag on exit
+        struct SearchGuard {
+            std::atomic<bool>& flag;
+            ~SearchGuard() { flag.store(false, std::memory_order_release); }
+        } guard{search_in_progress_};
+#endif
 
         size_t num_queries = queries.rows;
 
@@ -897,7 +922,9 @@ protected:
         int max_index = 0;
         int num_leaves = 0;
         while (!to_process.empty()) {
-            auto [node, node_idx] = to_process.front();
+            std::pair<Node*, int> front_pair = to_process.front();
+            Node* node = front_pair.first;
+            int node_idx = front_pair.second;
             to_process.pop();
 
             max_index = std::max(max_index, node_idx);
@@ -1003,7 +1030,9 @@ protected:
         }
 
         // Verify arithmetic layout (optional debug check)
-        for (const auto& [node, idx] : node_to_index) {
+        for (const auto& entry : node_to_index) {
+            Node* node = entry.first;
+            int idx = entry.second;
             if (!node->childs.empty() && node->childs.size() > 0) {
                 int first_child_expected = idx * this->branching_ + 1;  // +1 offset
                 int first_child_actual = node_to_index[node->childs[0]];
@@ -1134,6 +1163,11 @@ private:
     // GPU state (mutable = implementation detail, not logical state)
     mutable bool gpu_initialized_;
     mutable bool gpu_search_ready_;
+
+#ifndef NDEBUG
+    // Thread safety detection (debug builds only)
+    mutable std::atomic<bool> search_in_progress_{false};
+#endif
     mutable size_t num_nodes_;
     mutable size_t leaf_count_;      // Number of leaf nodes (for heap size calculation)
     mutable size_t padded_veclen_;

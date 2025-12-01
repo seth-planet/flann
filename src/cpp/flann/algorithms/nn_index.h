@@ -440,17 +440,17 @@ public:
 
             knnSearchCL(queries, iMat, dMat, knn, params);
 
-            int n = 0;
+            size_t n = 0;
             for (int i = 0; i < (int)queries.rows; i++) {
                 // Count the good data returned
-                for (int j = 0; j < knn && dMat[i][j] >= 0; j++)
+                for (size_t j = 0; j < knn && dMat[i][j] >= 0; j++)
                     n = j;
 
                 indices[i].resize(n);
                 dists[i].resize(n);
 
                 // Assume that OpenCL results are sorted and the right format.
-                for (int j = 0; j < knn && dMat[i][j] >= 0; j++)
+                for (size_t j = 0; j < knn && dMat[i][j] >= 0; j++)
                 {
                     indices[i][j] = iMat[i][j];
                     dists[i][j] = dMat[i][j];

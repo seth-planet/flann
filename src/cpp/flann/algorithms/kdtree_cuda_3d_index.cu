@@ -572,7 +572,7 @@ int KDTreeCuda3dIndex<Distance >::radiusSearchGpu(const Matrix<ElementType>& que
 
     int buffer_index=0;
     for( size_t i=0; i<queries.rows; i++ ) {
-        for( size_t j=0; j<counts_host[i]; j++ ) {
+        for( size_t j=0; j<static_cast<size_t>(counts_host[i]); j++ ) {
             dists[i][j]=dists_temp[buffer_index];
             indices[i][j]=indices_temp[buffer_index];
             ++buffer_index;

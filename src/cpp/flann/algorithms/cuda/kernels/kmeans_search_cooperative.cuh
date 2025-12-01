@@ -701,6 +701,8 @@ bool launch_kmeans_search_cooperative(
     int branching,  // Add branching factor parameter
     float cb_index
 ) {
+    (void)heap_size;  // Currently unused - kernel uses template-based heap sizing
+
     dim3 grid(num_queries);   // One block per query
     dim3 block(loc_size);     // LOC_SIZE threads per block
 
