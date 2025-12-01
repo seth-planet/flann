@@ -231,8 +231,8 @@ if (BUILD_CUDA_LIB)
         set(CMAKE_CUDA_FLAGS_RELEASE "${CMAKE_CUDA_FLAGS_RELEASE} --use_fast_math")
         set(CMAKE_CUDA_FLAGS_RELEASE "${CMAKE_CUDA_FLAGS_RELEASE} -lineinfo")
 
-        # Add FLANN_USE_CUDA definition
-        add_definitions(-DFLANN_USE_CUDA)
+        # Note: FLANN_USE_CUDA is added per-target in src/cpp/CMakeLists.txt and
+        # cmake/flann_utils.cmake to avoid polluting non-CUDA targets (like OpenCL tests)
 
         # Find CUDA Toolkit (for cudart, etc.)
         find_package(CUDAToolkit 11.0)

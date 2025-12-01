@@ -1,6 +1,6 @@
+// Note: FLANN_USE_CUDA is defined via CMake target_compile_definitions
 #include <gtest/gtest.h>
 #include <time.h>
-#define FLANN_USE_CUDA
 #include <flann/flann.h>
 #include <flann/io/hdf5.h>
 #include <flann/nn/ground_truth.h>

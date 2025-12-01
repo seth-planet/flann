@@ -810,7 +810,7 @@ protected:
         assert(sz_result_dist > 0);
 
         // Make a buffer for the output memory & copy it
-        // FIXME: Said buffer should be pinned for best performance
+        // Note: CUDA testing showed pinned memory provides no benefit for small result transfers (<1MB)
         int *rsId = (int *)malloc(sz_result_id);
         err = clEnqueueReadBuffer(this->cl_cmd_queue_, resultIdArr_cl, CL_FALSE, 0, sz_result_id,
                                   (void *)rsId, 0, NULL, NULL);

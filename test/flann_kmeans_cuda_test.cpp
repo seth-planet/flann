@@ -27,7 +27,7 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *************************************************************************/
 
-#define FLANN_USE_CUDA
+// Note: FLANN_USE_CUDA is defined via CMake target_compile_definitions
 #include <gtest/gtest.h>
 #include <time.h>
 

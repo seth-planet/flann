@@ -92,6 +92,7 @@ macro(flann_add_cuda_gtest exe src)
     # add build target (modern CMake CUDA)
     add_executable(${exe} EXCLUDE_FROM_ALL ${src})
     target_link_libraries(${exe} ${googletest_LIBRARIES} CUDA::cudart ${ARGN})
+    target_compile_definitions(${exe} PRIVATE FLANN_USE_CUDA)
     add_dependencies(${exe} googletest)
 
     # add target for running test

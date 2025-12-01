@@ -11,6 +11,12 @@ using namespace flann;
 
 /**
  * Test fixture for SIFT 10K dataset
+ *
+ * Note on precision thresholds: OpenCL tests use 75% precision threshold vs CUDA's 95%.
+ * This difference is explained by different test parameters:
+ * - OpenCL uses branching=7, which is not power-of-2 and has different characteristics
+ * - CUDA uses branching=32, which is optimized for the cooperative kernel with LOC_SIZE=128
+ * The 75% threshold is appropriate for the OpenCL configuration.
  */
 class KMeansOpenCL_SIFT10K : public DatasetTestFixture<float, float> {
 protected:

@@ -42,7 +42,9 @@ if (BUILD_CUDA_LIB)
     target_link_libraries(flann_cuda PUBLIC CUDA::cudart)
 
     # Set compile definitions
-    set_property(TARGET flann_cuda_s PROPERTY COMPILE_DEFINITIONS FLANN_STATIC)
+    # CUDA library targets need FLANN_USE_CUDA for enum definitions in defines.h
+    set_property(TARGET flann_cuda_s PROPERTY COMPILE_DEFINITIONS FLANN_STATIC FLANN_USE_CUDA)
+    set_property(TARGET flann_cuda PROPERTY COMPILE_DEFINITIONS FLANN_USE_CUDA)
     set_property(TARGET flann_cpp PROPERTY COMPILE_DEFINITIONS FLANN_USE_CUDA)
     set_property(TARGET flann_cpp_s PROPERTY COMPILE_DEFINITIONS FLANN_STATIC FLANN_USE_CUDA)
 

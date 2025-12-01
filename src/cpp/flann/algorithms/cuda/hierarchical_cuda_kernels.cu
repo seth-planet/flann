@@ -41,7 +41,7 @@
  * - .h files: Host-side declarations - compiled by C++ compiler
  */
 
-#define FLANN_USE_CUDA
+// Note: FLANN_USE_CUDA is defined via CMake target_compile_definitions
 
 // Include the kernel implementations
 #include "kernels/hierarchical_search_kernel.cuh"

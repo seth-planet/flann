@@ -27,7 +27,7 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *************************************************************************/
 
-#define FLANN_USE_CUDA
+// Note: FLANN_USE_CUDA is defined via CMake target_compile_definitions
 #include <gtest/gtest.h>
 #include <time.h>
 
@@ -61,8 +61,8 @@ protected:
 		k_nn_ = 3;
 		printf("Reading test data...");
 		fflush(stdout);
-		flann::load_from_file(data, "../datasets/brief100K.h5", "dataset");
-		flann::load_from_file(query, "../datasets/brief100K.h5", "query");
+		flann::load_from_file(data, "brief100K.h5", "dataset");
+		flann::load_from_file(query, "brief100K.h5", "query");
 		printf("done\n");
 
 		// Compute ground truth with linear index (brief100K.h5 has no pre-computed GT)

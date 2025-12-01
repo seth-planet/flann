@@ -300,102 +300,6 @@ protected:
         HandleFLANNErr(err);
         this->cl_node_variance_ = clCreateBuffer(context, CL_MEM_READ_ONLY, 256, NULL, &err);
         HandleFLANNErr(err);
-
-        // ========================================================================
-        // VALIDATION: Log nodeIndex values to compare with CUDA tree_nodes.child_start
-        // ========================================================================
-        printf("\n[VALIDATION] OpenCL nodeIndex values (compare with CUDA tree_nodes.child_start):\n");
-        printf("For CUDA comparison: nodeIndex[i] should equal tree_nodes[i].child_start\n");
-        printf("(if structures are equivalent)\n\n");
-
-        // Read back first 10 nodeIndex values
-        int validation_count = std::min(10, this->branching_ * this->trees_);
-        std::vector<int> nodeIndex_verify(validation_count);
-
-        err = clEnqueueReadBuffer(cmd_queue, this->cl_node_index_arr_, CL_TRUE, 0,
-                                  sizeof(int) * validation_count,
-                                  nodeIndex_verify.data(), 0, NULL, NULL);
-        HandleFLANNErr(err);
-
-        printf("First %d OpenCL nodeIndex[i] values:\n", validation_count);
-        for (int i = 0; i < validation_count; ++i) {
-            int value = nodeIndex_verify[i];
-
-            if (value >= 0) {
-                // Positive value - pointer to children or parent node
-                printf("  nodeIndex[%d] = %d  (pointer to children/parent location)\n", i, value);
-            } else {
-                // Negative value - leaf offset
-                int leaf_offset = -(value + 1);
-                printf("  nodeIndex[%d] = %d  (leaf: offset=%d)\n", i, value, leaf_offset);
-            }
-        }
-
-        printf("\n[VALIDATION] Expected CUDA tree_nodes[i].child_start values should match above.\n");
-        printf("If CUDA shows DIFFERENT values, structures are NOT equivalent.\n\n");
-
-        // ========================================================================
-        // PHASE 1 VALIDATION: Save OpenCL structure to file for comparison with CUDA
-        // ========================================================================
-        {
-            // Read back first 100 nodeIndex values
-            int log_count = std::min(100, this->branching_ * this->trees_);
-            std::vector<int> nodeIndex_full(log_count);
-            err = clEnqueueReadBuffer(cmd_queue, this->cl_node_index_arr_, CL_TRUE, 0,
-                                      sizeof(int) * log_count,
-                                      nodeIndex_full.data(), 0, NULL, NULL);
-            HandleFLANNErr(err);
-
-            // Read back first 100 pivots (first 8 bytes each)
-            int pivot_bytes = this->veclen_;  // Should be 32 for Brief
-            std::vector<ElementType> pivots_full(log_count * pivot_bytes);
-            err = clEnqueueReadBuffer(cmd_queue, this->cl_node_pivots_, CL_TRUE, 0,
-                                      sizeof(ElementType) * log_count * pivot_bytes,
-                                      pivots_full.data(), 0, NULL, NULL);
-            HandleFLANNErr(err);
-
-            FILE* opencl_log = fopen("/tmp/opencl_structure.log", "w");
-            if (opencl_log) {
-                fprintf(opencl_log, "=== OPENCL HIERARCHICAL INDEX STRUCTURE ===\n\n");
-
-                // Log tree structure summary
-                fprintf(opencl_log, "TREE SUMMARY:\n");
-                fprintf(opencl_log, "  Trees: %d, Branching: %d\n", this->trees_, this->branching_);
-                fprintf(opencl_log, "  First level children: %d\n", this->branching_ * this->trees_);
-                fprintf(opencl_log, "  veclen: %d\n\n", this->veclen_);
-
-                // Log first 100 nodeIndex values
-                fprintf(opencl_log, "FIRST 100 NODEINDEX VALUES:\n");
-                for (int i = 0; i < log_count; ++i) {
-                    int value = nodeIndex_full[i];
-                    if (value >= 0) {
-                        fprintf(opencl_log, "  nodeIndex[%3d] = %6d  (pointer/parent)\n", i, value);
-                    } else {
-                        fprintf(opencl_log, "  nodeIndex[%3d] = %6d  (leaf: offset=%d)\n",
-                               i, value, -(value + 1));
-                    }
-                }
-                fprintf(opencl_log, "\n");
-
-                // Log first 100 pivot descriptors (first 8 bytes each)
-                fprintf(opencl_log, "FIRST 100 PIVOTS (first 8 bytes each):\n");
-                for (int i = 0; i < log_count; ++i) {
-                    const ElementType* pivot = &pivots_full[i * pivot_bytes];
-                    fprintf(opencl_log, "  Pivot[%3d]: ", i);
-                    for (int j = 0; j < 8 && j < pivot_bytes; ++j) {
-                        fprintf(opencl_log, "%02x ", (unsigned char)pivot[j]);
-                    }
-                    fprintf(opencl_log, "\n");
-                }
-                fprintf(opencl_log, "\n");
-
-                fclose(opencl_log);
-                printf("[PHASE 1] OpenCL structure saved to /tmp/opencl_structure.log\n");
-            } else {
-                fprintf(stderr, "[ERROR] Could not open /tmp/opencl_structure.log for writing\n");
-            }
-        }
-        // ========================================================================
     }
 
     /**
@@ -881,7 +785,7 @@ protected:
         assert(sz_result_dist > 0);
 
         // Make a buffer for the output memory & copy it
-        // FIXME: Said buffer should be pinned for best performance
+        // Note: CUDA testing showed pinned memory provides no benefit for small result transfers (<1MB)
         int *rsId = (int *)malloc(sz_result_id);
         err = clEnqueueReadBuffer(this->cl_cmd_queue_, resultIdArr_cl, CL_FALSE, 0, sz_result_id,
                                   (void *)rsId, 0, NULL, NULL);

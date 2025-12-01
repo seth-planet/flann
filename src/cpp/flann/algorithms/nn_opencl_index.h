@@ -236,19 +236,21 @@ public:
         err = clGetCommandQueueInfo(cl_cmd_queue_, CL_QUEUE_DEVICE, sizeof(dev), &dev, NULL);
         HandleFLANNErr(err);
 
-        // Log device information for diagnostics
+#ifdef FLANN_DEBUG
+        // Log device information for diagnostics (only in debug builds)
         char device_name[256];
         char device_version[256];
-        size_t max_work_group_size;
+        size_t max_work_group_size_dbg;
         cl_uint max_compute_units;
         clGetDeviceInfo(dev, CL_DEVICE_NAME, sizeof(device_name), device_name, NULL);
         clGetDeviceInfo(dev, CL_DEVICE_VERSION, sizeof(device_version), device_version, NULL);
-        clGetDeviceInfo(dev, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(max_work_group_size), &max_work_group_size, NULL);
+        clGetDeviceInfo(dev, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(max_work_group_size_dbg), &max_work_group_size_dbg, NULL);
         clGetDeviceInfo(dev, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(max_compute_units), &max_compute_units, NULL);
         printf("[FLANN OpenCL] Device: %s\n", device_name);
         printf("[FLANN OpenCL] OpenCL Version: %s\n", device_version);
-        printf("[FLANN OpenCL] Max Work Group Size: %zu\n", max_work_group_size);
+        printf("[FLANN OpenCL] Max Work Group Size: %zu\n", max_work_group_size_dbg);
         printf("[FLANN OpenCL] Max Compute Units: %u\n", max_compute_units);
+#endif
 
         // Init the cl_mem index
         initCLIndexMem(context);
