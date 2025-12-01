@@ -49,24 +49,6 @@ namespace cuda {
 #include "flann/algorithms/cuda/kernels/kmeans_search_cooperative.cuh"
 #else
 // Forward declare kernel launch functions for non-CUDA compilation
-bool launch_kmeans_search(
-    const float* dataset,
-    const float* queries,
-    const KMeansNodeGPU* tree_nodes,
-    const float* tree_pivots,
-    const int* dataset_indices,
-    int* result_indices,
-    float* result_distances,
-    size_t num_queries,
-    size_t dim,
-    size_t num_nodes,
-    int knn,
-    int max_checks,
-    int pq_size,
-    dim3 grid,
-    dim3 block,
-    float cb_index);
-
 template<int K>
 bool launch_kmeans_search_cooperative(
     const float* dataset,
@@ -106,6 +88,11 @@ struct KMeansCUDAIndexParams : public KMeansIndexParams {
  *
  * Hierarchical k-means tree with GPU-accelerated search.
  * Builds tree on CPU (reusing KMeansIndex logic), then uploads to GPU.
+ *
+ * THREAD SAFETY: This index is NOT thread-safe for concurrent searches.
+ * A single index instance should not be used from multiple threads
+ * simultaneously. Each thread should have its own index instance,
+ * or external synchronization must be used.
  *
  * Memory layout:
  * - Tree nodes: Breadth-first flat array
@@ -244,7 +231,6 @@ public:
         std::swap(padded_veclen_, other.padded_veclen_);
 
         // Swap GPU buffers (move semantics)
-        tree_nodes_gpu_ = std::move(other.tree_nodes_gpu_);
         tree_pivots_gpu_ = std::move(other.tree_pivots_gpu_);
         dataset_gpu_ = std::move(other.dataset_gpu_);
     }
@@ -457,6 +443,25 @@ public:
     }
 
     /**
+     * @brief Check if a given k value is supported by the CUDA cooperative kernel
+     *
+     * The cooperative kernel requires template specialization for each k value.
+     * Unsupported k values will fall back to CPU search.
+     *
+     * @param knn Number of nearest neighbors to check
+     * @return true if k is supported on GPU, false if CPU fallback needed
+     */
+    bool isKValueSupportedForGPU(size_t knn) const
+    {
+        // Cooperative kernel only supports these k values (template specializations)
+        // Also requires branching=32 or 64
+        if (this->branching_ != 32 && this->branching_ != 64) {
+            return false;
+        }
+        return (knn == 1 || knn == 5 || knn == 10 || knn == 20 || knn == 50 || knn == 100);
+    }
+
+    /**
      * @brief Automatic CPU/GPU dispatch for k-NN search (size_t indices)
      *
      * Overrides base class knnSearch() to automatically use GPU when prepared.
@@ -464,6 +469,7 @@ public:
      *
      * If buildCUDAKnnSearch() was called, uses GPU acceleration via knnSearchGPU().
      * Otherwise, falls back to CPU search from base class.
+     * Falls back to CPU if k value is not supported by the CUDA kernel.
      *
      * @param queries Query matrix [num_queries x veclen_]
      * @param indices Output indices [num_queries x knn]
@@ -478,10 +484,11 @@ public:
                   size_t knn,
                   const SearchParams& params) const override
     {
-        // Automatic dispatch: GPU if prepared, CPU otherwise
-        if (gpu_search_ready_) {
+        // Automatic dispatch: GPU if prepared AND k value is supported
+        if (gpu_search_ready_ && isKValueSupportedForGPU(knn)) {
             return knnSearchGPU(queries, indices, dists, knn, params);
         } else {
+            // Fall back to CPU for unsupported k values or when GPU not ready
             return BaseClass::knnSearch(queries, indices, dists, knn, params);
         }
     }
@@ -490,6 +497,7 @@ public:
      * @brief Automatic CPU/GPU dispatch for k-NN search (int indices)
      *
      * Overrides base class knnSearch() to automatically use GPU when prepared.
+     * Falls back to CPU if k value is not supported by the CUDA kernel.
      *
      * @param queries Query matrix [num_queries x veclen_]
      * @param indices Output indices [num_queries x knn]
@@ -504,10 +512,11 @@ public:
                   size_t knn,
                   const SearchParams& params) const override
     {
-        // Automatic dispatch: GPU if prepared, CPU otherwise
-        if (gpu_search_ready_) {
+        // Automatic dispatch: GPU if prepared AND k value is supported
+        if (gpu_search_ready_ && isKValueSupportedForGPU(knn)) {
             return knnSearchGPU(queries, indices, dists, (int)knn, params);
         } else {
+            // Fall back to CPU for unsupported k values or when GPU not ready
             return BaseClass::knnSearch(queries, indices, dists, knn, params);
         }
     }
@@ -717,10 +726,13 @@ protected:
         }
 
         if (!use_cooperative) {
-            // Single-threaded kernel disabled during OpenCL parity transformation
-            // (requires dataset_indices which has been removed)
-            throw FLANNException("Unsupported k value for OpenCL parity cooperative kernel. "
-                               "Supported k values: 1, 5, 10, 20, 50, 100");
+            // This should not normally be reached - knnSearch() should fall back to CPU
+            // for unsupported k values. If you see this error, it means knnSearchGPU()
+            // was called directly with an unsupported k value.
+            throw FLANNException(
+                "Unsupported k value for CUDA cooperative kernel. "
+                "Supported k values: 1, 5, 10, 20, 50, 100 (with branching=32 or 64). "
+                "Use knnSearch() instead of knnSearchGPU() for automatic CPU fallback.");
         }
 
         if (!success) {
@@ -762,9 +774,6 @@ protected:
      */
     void freeGPUMemory()
     {
-        // Old hierarchical structures (TODO: Remove after full conversion)
-        tree_nodes_gpu_ = CUDABuffer<KMeansNodeGPU>();
-
         // Flat array structures (OpenCL-style with unified nodeIndex)
         node_index_gpu_ = CUDABuffer<int>();
         node_variance_gpu_ = CUDABuffer<float>();
@@ -1008,90 +1017,6 @@ protected:
     }
 
     /**
-     * @brief Flatten tree to breadth-first arrays (OLD - will be replaced)
-     *
-     * @param root Root node
-     * @param[out] flat_nodes Output flat node array
-     * @param[out] flat_pivots Output flat pivot array (padded)
-     */
-    void flattenTree(
-        Node* root,
-        std::vector<KMeansNodeGPU>& flat_nodes,
-        std::vector<ElementType>& flat_pivots,
-        std::vector<int>& dataset_indices) const
-    {
-        if (!root) return;
-
-        flat_nodes.clear();
-        flat_pivots.clear();
-        dataset_indices.clear();
-
-        // Breadth-first traversal
-        std::queue<Node*> nodeQueue;
-        nodeQueue.push(root);
-
-        int current_level = 0;
-
-        while (!nodeQueue.empty()) {
-            Node* node = nodeQueue.front();
-            nodeQueue.pop();
-
-            // Create GPU node
-            KMeansNodeGPU gpu_node;
-            gpu_node.pivot_index = flat_nodes.size();  // Index of this node
-            gpu_node.level = current_level;
-            gpu_node.radius = node->radius;
-            gpu_node.variance = node->variance;
-
-            // Handle children
-            if (node->childs.empty()) {
-                // Leaf node: Store dataset point indices
-                // Use NEGATIVE child_start to mark as leaf: -(offset + 1)
-                int leaf_offset = dataset_indices.size();
-                gpu_node.child_start = -(leaf_offset + 1);  // Negative marks leaf
-
-                // Add all dataset indices for this leaf
-                for (size_t i = 0; i < node->points.size(); ++i) {
-                    size_t index = node->points[i].index;
-                    // Skip removed points
-                    if (!this->removed_ || !this->removed_points_.test(index)) {
-                        dataset_indices.push_back(static_cast<int>(index));
-                    }
-                }
-
-                // Store actual count of indices added
-                gpu_node.child_count = dataset_indices.size() - leaf_offset;
-            } else {
-                // Internal node: child_start points to children in flat_nodes
-                gpu_node.child_start = flat_nodes.size() + nodeQueue.size() + 1;
-                gpu_node.child_count = node->childs.size();
-
-                // Enqueue children
-                for (size_t i = 0; i < node->childs.size(); ++i) {
-                    nodeQueue.push(node->childs[i]);
-                }
-            }
-
-            flat_nodes.push_back(gpu_node);
-
-            // Copy pivot (with padding to padded_veclen_)
-            for (size_t i = 0; i < padded_veclen_; ++i) {
-                if (i < this->veclen_) {
-                    flat_pivots.push_back(node->pivot[i]);
-                } else {
-                    flat_pivots.push_back(0);  // Pad with zeros
-                }
-            }
-
-            // Update level for next iteration
-            if (nodeQueue.empty() || current_level < 100) {
-                // Simple level tracking (could be improved)
-                current_level = gpu_node.level + 1;
-            }
-        }
-    }
-
-    /**
      * @brief Upload dataset to GPU (with padding)
      */
     void uploadDataset() const
@@ -1214,7 +1139,6 @@ private:
     mutable size_t padded_veclen_;
 
     // GPU buffers (RAII - automatic cleanup, mutable for const search methods)
-    mutable CUDABuffer<KMeansNodeGPU> tree_nodes_gpu_;  // TODO: Remove after flat array conversion
     mutable CUDABuffer<ElementType> tree_pivots_gpu_;
     mutable CUDABuffer<ElementType> dataset_gpu_;
 

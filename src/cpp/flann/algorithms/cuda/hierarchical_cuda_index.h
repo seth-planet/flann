@@ -75,7 +75,6 @@ bool launch_hierarchical_search(
 bool launch_hierarchical_search_cooperative(
     const unsigned char* dataset,
     const unsigned char* queries,
-    const KMeansNodeGPU* tree_nodes,
     const unsigned char* tree_pivots,
     const int* device_node_index,
     int* result_indices,
@@ -112,6 +111,11 @@ struct HierarchicalCUDAIndexParams : public HierarchicalClusteringIndexParams
  *
  * GPU-accelerated version of hierarchical clustering for binary descriptors.
  * Uses Hamming distance for similarity computation.
+ *
+ * THREAD SAFETY: This index is NOT thread-safe for concurrent searches.
+ * A single index instance should not be used from multiple threads
+ * simultaneously. Each thread should have its own index instance,
+ * or external synchronization must be used.
  *
  * **Architecture:**
  * - Dual inheritance from HierarchicalClusteringIndex (CPU) and CUDAIndex (GPU marker)
@@ -338,7 +342,6 @@ public:
             bool success = launch_hierarchical_search_cooperative(
                 reinterpret_cast<const unsigned char*>(gpu_dataset_.get()),
                 reinterpret_cast<const unsigned char*>(gpu_query_buffer_.get()),
-                gpu_nodes_.get(),
                 reinterpret_cast<const unsigned char*>(gpu_pivots_.get()),
                 gpu_node_index_.get(),
                 gpu_indices_buffer_.get(),
@@ -458,12 +461,16 @@ public:
                   const SearchParams& params) const override
     {
         if (gpu_search_ready_) {
-            // Convert to matrix format for GPU search
-            assert(indices.size() >= queries.rows);
-            assert(dists.size() >= queries.rows);
+            // Validate output vector sizes
+            if (indices.size() < queries.rows || dists.size() < queries.rows) {
+                throw FLANNException("Output vectors too small for query count");
+            }
 
-            flann::Matrix<size_t> indices_mat(new size_t[queries.rows * knn], queries.rows, knn);
-            flann::Matrix<DistanceType> dists_mat(new DistanceType[queries.rows * knn], queries.rows, knn);
+            // Use RAII vectors for exception safety (no manual delete needed)
+            std::vector<size_t> indices_storage(queries.rows * knn);
+            std::vector<DistanceType> dists_storage(queries.rows * knn);
+            flann::Matrix<size_t> indices_mat(indices_storage.data(), queries.rows, knn);
+            flann::Matrix<DistanceType> dists_mat(dists_storage.data(), queries.rows, knn);
 
             int result = knnSearchGPU(queries, indices_mat, dists_mat, knn, params);
 
@@ -476,9 +483,6 @@ public:
                     dists[i][j] = dists_mat[i][j];
                 }
             }
-
-            delete[] indices_mat.ptr();
-            delete[] dists_mat.ptr();
 
             return result;
         } else {
@@ -836,7 +840,6 @@ protected:
         bool success = launch_hierarchical_search_cooperative(
             reinterpret_cast<const unsigned char*>(gpu_dataset_.get()),
             reinterpret_cast<const unsigned char*>(gpu_query_buffer_.get()),  // Persistent buffer
-            gpu_nodes_.get(),
             reinterpret_cast<const unsigned char*>(gpu_pivots_.get()),
             gpu_node_index_.get(),  // CRITICAL: Pass nodeIndex indirection array
             gpu_indices_buffer_.get(),  // Persistent buffer

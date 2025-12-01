@@ -232,8 +232,14 @@ BenchmarkResult benchmark_cpu_hierarchical(
         config.leaf_size
     );
 
-    for (int run = 0; run < config.num_runs; run++) {
-        cout << "\nRun " << (run + 1) << "/" << config.num_runs << ":" << endl;
+    int total_runs = config.warmup_runs + config.num_runs;
+    for (int run = 0; run < total_runs; run++) {
+        bool is_warmup = (run < config.warmup_runs);
+        if (is_warmup) {
+            cout << "\nWarmup run " << (run + 1) << "/" << config.warmup_runs << " (discarded):" << endl;
+        } else {
+            cout << "\nRun " << (run - config.warmup_runs + 1) << "/" << config.num_runs << ":" << endl;
+        }
 
         Timer timer;
 
@@ -243,7 +249,7 @@ BenchmarkResult benchmark_cpu_hierarchical(
         Index<Hamming<unsigned char>> index(dataset, params);
         index.buildIndex();
         double build_time = timer.elapsed();
-        build_times.push_back(build_time);
+        if (!is_warmup) build_times.push_back(build_time);
         cout << " " << fixed << setprecision(3) << build_time << "s" << endl;
 
         // Search
@@ -254,11 +260,11 @@ BenchmarkResult benchmark_cpu_hierarchical(
         timer.reset();
         index.knnSearch(queries, indices, distances, config.k, SearchParams(config.checks));
         double search_time = timer.elapsed();
-        search_times.push_back(search_time);
+        if (!is_warmup) search_times.push_back(search_time);
         cout << " " << fixed << setprecision(3) << search_time << "s" << endl;
 
         // Calculate precision (last run only)
-        if (run == config.num_runs - 1) {
+        if (run == total_runs - 1) {
             result.precision = calculate_precision(gt_indices, indices, config.k);
             cout << "  Precision: " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
         }
@@ -278,6 +284,7 @@ BenchmarkResult benchmark_cpu_hierarchical(
     cout << "\nSummary:" << endl;
     cout << "  Build time:    " << result.build_time.format() << "s" << endl;
     cout << "  Search time:   " << result.search_time.format() << "s" << endl;
+    cout << "  Per-query:     " << fixed << setprecision(2) << (result.search_time.mean * 1e6 / queries.rows) << " µs" << endl;
     cout << "  Throughput:    " << fixed << setprecision(1) << result.queries_per_sec << " queries/sec" << endl;
     cout << "  Precision:     " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
 
@@ -312,8 +319,14 @@ BenchmarkResult benchmark_opencl_hierarchical(
         config.leaf_size
     );
 
-    for (int run = 0; run < config.num_runs; run++) {
-        cout << "\nRun " << (run + 1) << "/" << config.num_runs << ":" << endl;
+    int total_runs = config.warmup_runs + config.num_runs;
+    for (int run = 0; run < total_runs; run++) {
+        bool is_warmup = (run < config.warmup_runs);
+        if (is_warmup) {
+            cout << "\nWarmup run " << (run + 1) << "/" << config.warmup_runs << " (discarded):" << endl;
+        } else {
+            cout << "\nRun " << (run - config.warmup_runs + 1) << "/" << config.num_runs << ":" << endl;
+        }
 
         Timer timer;
 
@@ -323,7 +336,7 @@ BenchmarkResult benchmark_opencl_hierarchical(
         Index<Hamming<unsigned char>> index(dataset, params);
         index.buildIndex();
         double build_time = timer.elapsed();
-        build_times.push_back(build_time);
+        if (!is_warmup) build_times.push_back(build_time);
         cout << " " << fixed << setprecision(3) << build_time << "s" << endl;
 
         // GPU upload
@@ -331,7 +344,7 @@ BenchmarkResult benchmark_opencl_hierarchical(
         timer.reset();
         index.buildCLKnnSearch(config.k, SearchParams(config.checks));
         double upload_time = timer.elapsed();
-        upload_times.push_back(upload_time);
+        if (!is_warmup) upload_times.push_back(upload_time);
         cout << " " << fixed << setprecision(3) << upload_time << "s" << endl;
 
         // Search (GPU)
@@ -342,11 +355,11 @@ BenchmarkResult benchmark_opencl_hierarchical(
         timer.reset();
         index.knnSearch(queries, indices, distances, config.k, SearchParams(config.checks));
         double search_time = timer.elapsed();
-        search_times.push_back(search_time);
+        if (!is_warmup) search_times.push_back(search_time);
         cout << " " << fixed << setprecision(3) << search_time << "s" << endl;
 
         // Calculate precision (last run only)
-        if (run == config.num_runs - 1) {
+        if (run == total_runs - 1) {
             result.precision = calculate_precision(gt_indices, indices, config.k);
             cout << "  Precision: " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
         }
@@ -367,6 +380,7 @@ BenchmarkResult benchmark_opencl_hierarchical(
     cout << "  Build time:    " << result.build_time.format() << "s" << endl;
     cout << "  Upload time:   " << result.gpu_upload_time.format() << "s" << endl;
     cout << "  Search time:   " << result.search_time.format() << "s" << endl;
+    cout << "  Per-query:     " << fixed << setprecision(2) << (result.search_time.mean * 1e6 / queries.rows) << " µs" << endl;
     cout << "  Throughput:    " << fixed << setprecision(1) << result.queries_per_sec << " queries/sec" << endl;
     cout << "  Precision:     " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
 
@@ -402,8 +416,14 @@ BenchmarkResult benchmark_cuda_hierarchical(
         config.leaf_size
     );
 
-    for (int run = 0; run < config.num_runs; run++) {
-        cout << "\nRun " << (run + 1) << "/" << config.num_runs << ":" << endl;
+    int total_runs = config.warmup_runs + config.num_runs;
+    for (int run = 0; run < total_runs; run++) {
+        bool is_warmup = (run < config.warmup_runs);
+        if (is_warmup) {
+            cout << "\nWarmup run " << (run + 1) << "/" << config.warmup_runs << " (discarded):" << endl;
+        } else {
+            cout << "\nRun " << (run - config.warmup_runs + 1) << "/" << config.num_runs << ":" << endl;
+        }
 
         Timer timer;
 
@@ -413,7 +433,7 @@ BenchmarkResult benchmark_cuda_hierarchical(
         Index<Hamming<unsigned char>> index(dataset, params);
         index.buildIndex();
         double build_time = timer.elapsed();
-        build_times.push_back(build_time);
+        if (!is_warmup) build_times.push_back(build_time);
         cout << " " << fixed << setprecision(3) << build_time << "s" << endl;
 
         // GPU upload
@@ -421,7 +441,7 @@ BenchmarkResult benchmark_cuda_hierarchical(
         timer.reset();
         index.buildCUDAKnnSearch(config.k, SearchParams(config.checks));
         double upload_time = timer.elapsed();
-        upload_times.push_back(upload_time);
+        if (!is_warmup) upload_times.push_back(upload_time);
         cout << " " << fixed << setprecision(3) << upload_time << "s" << endl;
 
         // Search (GPU)
@@ -432,11 +452,11 @@ BenchmarkResult benchmark_cuda_hierarchical(
         timer.reset();
         index.knnSearch(queries, indices, distances, config.k, SearchParams(config.checks));
         double search_time = timer.elapsed();
-        search_times.push_back(search_time);
+        if (!is_warmup) search_times.push_back(search_time);
         cout << " " << fixed << setprecision(3) << search_time << "s" << endl;
 
         // Calculate precision (last run only)
-        if (run == config.num_runs - 1) {
+        if (run == total_runs - 1) {
             result.precision = calculate_precision(gt_indices, indices, config.k);
             cout << "  Precision: " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
         }
@@ -457,6 +477,7 @@ BenchmarkResult benchmark_cuda_hierarchical(
     cout << "  Build time:    " << result.build_time.format() << "s" << endl;
     cout << "  Upload time:   " << result.gpu_upload_time.format() << "s" << endl;
     cout << "  Search time:   " << result.search_time.format() << "s" << endl;
+    cout << "  Per-query:     " << fixed << setprecision(2) << (result.search_time.mean * 1e6 / queries.rows) << " µs" << endl;
     cout << "  Throughput:    " << fixed << setprecision(1) << result.queries_per_sec << " queries/sec" << endl;
     cout << "  Precision:     " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
 

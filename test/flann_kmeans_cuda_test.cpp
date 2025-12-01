@@ -49,16 +49,16 @@ protected:
 /**
  * Test 1: Basic Search
  * Validate basic k-NN search with default parameters
- * Expected: ≥75% recall@10 (aligned with OpenCL threshold)
+ * Expected: ≥95% recall@5 (high precision requirement for production)
  */
 TEST_F(KMeansCUDA_SIFT10K, TestSearch)
 {
     TestSearch<flann::L2<float> >(
         data,
-        flann::KMeansCUDAIndexParams(7, 3, FLANN_CENTERS_RANDOM, 0.4),
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.75,  // 75% recall (aligned with OpenCL threshold)
+        0.95,  // 95% recall (high precision requirement)
         gt_indices
     );
 }
@@ -88,10 +88,10 @@ TEST_F(KMeansCUDA_SIFT10K, TestAddIncremental)
 {
     TestAddIncremental<flann::L2<float> >(
         data,
-        flann::KMeansCUDAIndexParams(7, 3, FLANN_CENTERS_RANDOM, 0.4),
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
-        flann::SearchParams(110),
-        0.75,  // 75% recall (aligned with OpenCL threshold)
+        flann::SearchParams(128),
+        0.95,  // 95% recall (high precision requirement)
         gt_indices
     );
 }
@@ -104,10 +104,10 @@ TEST_F(KMeansCUDA_SIFT10K, TestAddIncremental2)
 {
     TestAddIncremental2<flann::L2<float> >(
         data,
-        flann::KMeansCUDAIndexParams(7, 3, FLANN_CENTERS_RANDOM, 0.4),
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
-        flann::SearchParams(110),
-        0.75,  // 75% recall (aligned with OpenCL threshold)
+        flann::SearchParams(128),
+        0.95,  // 95% recall (high precision requirement)
         gt_indices
     );
 }
@@ -120,7 +120,7 @@ TEST_F(KMeansCUDA_SIFT10K, TestRemove)
 {
     TestRemove<flann::L2<float> >(
         data,
-        flann::KMeansCUDAIndexParams(7, 3, FLANN_CENTERS_RANDOM, 0.4),
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128)
     );
@@ -134,10 +134,10 @@ TEST_F(KMeansCUDA_SIFT10K, TestSave)
 {
     TestSave<flann::L2<float> >(
         data,
-        flann::KMeansCUDAIndexParams(7, 3, FLANN_CENTERS_RANDOM, 0.4),
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.75,  // 75% recall (consistent with CPU/OpenCL)
+        0.95,  // 95% recall (high precision requirement)
         gt_indices
     );
 }
@@ -150,10 +150,10 @@ TEST_F(KMeansCUDA_SIFT10K, TestCopy)
 {
     TestCopy<flann::L2<float> >(
         data,
-        flann::KMeansCUDAIndexParams(7, 3, FLANN_CENTERS_RANDOM, 0.4),
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.75,  // 75% recall (aligned with OpenCL threshold)
+        0.95,  // 95% recall (high precision requirement)
         gt_indices
     );
 }
@@ -166,10 +166,10 @@ TEST_F(KMeansCUDA_SIFT10K, TestCopy2)
 {
     TestCopy2<KMeansCUDAIndex<flann::L2<float> > >(
         data,
-        flann::KMeansCUDAIndexParams(7, 3, FLANN_CENTERS_RANDOM, 0.4),
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.75,  // 75% recall (aligned with OpenCL threshold)
+        0.95,  // 95% recall (high precision requirement)
         gt_indices
     );
 }
@@ -190,10 +190,10 @@ TEST_F(KMeansCUDA_SIFT100K, TestSearch)
 {
     TestSearch<flann::L2<float> >(
         data,
-        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.4),
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
-        flann::SearchParams(96),
-        0.75,  // 75% recall (aligned with OpenCL threshold)
+        flann::SearchParams(128),
+        0.95,  // 95% recall (high precision requirement)
         gt_indices
     );
 }
@@ -205,10 +205,10 @@ TEST_F(KMeansCUDA_SIFT100K, TestAddIncremental)
 {
     TestAddIncremental<flann::L2<float> >(
         data,
-        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.4),
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.75,  // 75% recall (consistent with CPU/OpenCL)
+        0.95,  // 95% recall (high precision requirement)
         gt_indices
     );
 }
@@ -220,10 +220,10 @@ TEST_F(KMeansCUDA_SIFT100K, TestAddIncremental2)
 {
     TestAddIncremental2<flann::L2<float> >(
         data,
-        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.4),
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.75,  // 75% recall (consistent with CPU/OpenCL)
+        0.95,  // 95% recall (high precision requirement)
         gt_indices
     );
 }

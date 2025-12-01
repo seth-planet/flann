@@ -145,7 +145,6 @@ __device__ inline void find_new_node_dist(
  * All threads cooperate to explore multiple parent nodes in parallel.
  * Continues until heap contains only leaf pointers.
  *
- * @param tree_nodes Flat array of tree node structures
  * @param device_node_index Hybrid node index array
  * @param tree_pivots Flat array of pivot descriptors
  * @param query Query descriptor
@@ -161,7 +160,6 @@ __device__ inline void find_new_node_dist(
  * @param padded_bytes Padded descriptor length
  */
 __device__ inline void find_nodes_cooperative(
-    const KMeansNodeGPU* __restrict__ tree_nodes,
     const int* __restrict__ device_node_index,
     const unsigned char* __restrict__ tree_pivots,
     const unsigned char* __restrict__ query,
@@ -435,7 +433,6 @@ __device__ inline void store_results(
  * - Block: 128 threads (cooperative workgroup)
  * - Shared memory: (128 * 2 * 2 + 2) * sizeof(int)
  *
- * @param tree_nodes Flat array of tree node structures
  * @param device_node_index Hybrid node index array
  * @param tree_pivots Flat array of pivot descriptors
  * @param dataset Full dataset of descriptors
@@ -451,7 +448,6 @@ __device__ inline void store_results(
  */
 template<int K>
 __global__ void hierarchical_search_cooperative_kernel(
-    const KMeansNodeGPU* __restrict__ tree_nodes,
     const int* __restrict__ device_node_index,
     const unsigned char* __restrict__ tree_pivots,
     const unsigned char* __restrict__ dataset,
@@ -486,7 +482,7 @@ __global__ void hierarchical_search_cooperative_kernel(
     // Phase 1: Find nodes (explore tree until heap contains only leaves)
     // OpenCL: findNodes(...)
     find_nodes_cooperative(
-        tree_nodes, device_node_index, tree_pivots, query,
+        device_node_index, tree_pivots, query,
         heap_dists, heap_ids, done_flag,
         num_nodes, num_trees, branching,
         local_id, local_size,
@@ -520,7 +516,6 @@ __global__ void hierarchical_search_cooperative_kernel(
  *
  * @param dataset Dataset descriptors (GPU)
  * @param queries Query descriptors (GPU)
- * @param tree_nodes Tree structure (GPU)
  * @param tree_pivots Pivot descriptors (GPU)
  * @param device_node_index Hybrid node index array (GPU)
  * @param result_indices Output indices (GPU)
@@ -537,7 +532,6 @@ __global__ void hierarchical_search_cooperative_kernel(
 bool launch_hierarchical_search_cooperative(
     const unsigned char* dataset,
     const unsigned char* queries,
-    const KMeansNodeGPU* tree_nodes,
     const unsigned char* tree_pivots,
     const int* device_node_index,
     int* result_indices,
@@ -570,100 +564,100 @@ bool launch_hierarchical_search_cooperative(
     // Tier 4: Non-aligned (kept for API compatibility)
     if (k == 1) {
         hierarchical_search_cooperative_kernel<1><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 2) {
         hierarchical_search_cooperative_kernel<2><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 3) {
         hierarchical_search_cooperative_kernel<3><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     // Tier 3: Multiple of 4 (vectorized)
     } else if (k == 4) {
         hierarchical_search_cooperative_kernel<4><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 5) {
         hierarchical_search_cooperative_kernel<5><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     // Tier 2: Multiple of 8 (good vectorization)
     } else if (k == 8) {
         hierarchical_search_cooperative_kernel<8><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 10) {
         hierarchical_search_cooperative_kernel<10><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 12) {
         hierarchical_search_cooperative_kernel<12><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     // Tier 1: Multiple of 16 (optimal - cache-aligned + vectorized)
     } else if (k == 16) {
         hierarchical_search_cooperative_kernel<16><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 20) {
         hierarchical_search_cooperative_kernel<20><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 24) {
         hierarchical_search_cooperative_kernel<24><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 32) {
         hierarchical_search_cooperative_kernel<32><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 50) {
         hierarchical_search_cooperative_kernel<50><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 64) {
         hierarchical_search_cooperative_kernel<64><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 100) {
         hierarchical_search_cooperative_kernel<100><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 128) {
         hierarchical_search_cooperative_kernel<128><<<grid, block, shared_mem_bytes>>>(
-            tree_nodes, device_node_index, tree_pivots, dataset, queries,
+            device_node_index, tree_pivots, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);

@@ -36,6 +36,22 @@
 
 #define GTEST_PRECISION 0.0004
 
+/**
+ * Compare search results allowing for distance ties.
+ * When indices differ, only fail if distances also differ significantly.
+ * This handles the case where multiple points are equidistant from a query -
+ * any of them is a valid k-th nearest neighbor.
+ */
+#define EXPECT_RESULT_EQ(idx1, dist1, idx2, dist2, tolerance) \
+    do { \
+        if ((idx1) != (idx2)) { \
+            EXPECT_NEAR(static_cast<double>(dist1), static_cast<double>(dist2), (tolerance)) \
+                << "Index mismatch with different distances: " \
+                << "idx1=" << (idx1) << " dist1=" << (dist1) \
+                << " vs idx2=" << (idx2) << " dist2=" << (dist2); \
+        } \
+    } while(0)
+
 
 template<typename T>
 float compute_precision(const flann::Matrix<T>& match, const flann::Matrix<T>& indices)
@@ -181,26 +197,6 @@ protected:
 			precision = computePrecisionDiscrete(gt_dists, dists);
 		}
 
-		// Debug: Print first query results vs ground truth
-		printf("[DEBUG] Query 0 results:\n");
-		printf("  Got:      ");
-		for (size_t i = 0; i < knn && i < indices.cols; ++i) {
-			printf("%zu ", indices[0][i]);
-		}
-		printf("\n  Expected: ");
-		for (size_t i = 0; i < knn && i < gt_indices.cols; ++i) {
-			printf("%zu ", gt_indices[0][i]);
-		}
-		printf("\n  Got dists:      ");
-		for (size_t i = 0; i < knn && i < dists.cols; ++i) {
-			printf("%d ", (int)dists[0][i]);
-		}
-		printf("\n  Expected dists: ");
-		for (size_t i = 0; i < knn && i < gt_dists.cols; ++i) {
-			printf("%d ", (int)gt_dists[0][i]);
-		}
-		printf("\n");
-
 		EXPECT_GE(precision, expected_precision);
 		printf("Precision: %g\n", precision);
 	}
@@ -250,26 +246,6 @@ protected:
 			precision = computePrecisionDiscrete(gt_dists, dists);
 		}
 
-		// Debug: Print first query results vs ground truth
-		printf("[DEBUG] Query 0 results:\n");
-		printf("  Got:      ");
-		for (size_t i = 0; i < knn && i < indices.cols; ++i) {
-			printf("%zu ", indices[0][i]);
-		}
-		printf("\n  Expected: ");
-		for (size_t i = 0; i < knn && i < gt_indices.cols; ++i) {
-			printf("%zu ", gt_indices[0][i]);
-		}
-		printf("\n  Got dists:      ");
-		for (size_t i = 0; i < knn && i < dists.cols; ++i) {
-			printf("%d ", (int)dists[0][i]);
-		}
-		printf("\n  Expected dists: ");
-		for (size_t i = 0; i < knn && i < gt_dists.cols; ++i) {
-			printf("%d ", (int)gt_dists[0][i]);
-		}
-		printf("\n");
-
 		EXPECT_GE(precision, expected_precision);
 		printf("Precision: %g\n", precision);
 	}
@@ -309,6 +285,12 @@ protected:
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index.buildCUDAKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
 		EXPECT_EQ(index.size(), data.rows);
 
 		start_timer("Searching KNN...");
@@ -322,26 +304,6 @@ protected:
 		else {
 			precision = computePrecisionDiscrete(gt_dists, dists);
 		}
-
-		// Debug: Print first query results vs ground truth
-		printf("[DEBUG] Query 0 results:\n");
-		printf("  Got:      ");
-		for (size_t i = 0; i < knn && i < indices.cols; ++i) {
-			printf("%zu ", indices[0][i]);
-		}
-		printf("\n  Expected: ");
-		for (size_t i = 0; i < knn && i < gt_indices.cols; ++i) {
-			printf("%zu ", gt_indices[0][i]);
-		}
-		printf("\n  Got dists:      ");
-		for (size_t i = 0; i < knn && i < dists.cols; ++i) {
-			printf("%d ", (int)dists[0][i]);
-		}
-		printf("\n  Expected dists: ");
-		for (size_t i = 0; i < knn && i < gt_dists.cols; ++i) {
-			printf("%d ", (int)gt_dists[0][i]);
-		}
-		printf("\n");
 
 		EXPECT_GE(precision, expected_precision);
 		printf("Precision: %g\n", precision);
@@ -363,6 +325,12 @@ protected:
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index2.buildCUDAKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
 		EXPECT_EQ(index2.size(), data.rows);
 
 		flann::Matrix<size_t> indices2(new size_t[query.rows*knn], query.rows, knn);
@@ -376,7 +344,8 @@ protected:
 				if (retestDists) {
 					EXPECT_NEAR(dists[i][j], dists2[i][j], 6);
 				} else {
-					EXPECT_EQ(indices[i][j], indices2[i][j]);
+					// Allow index differences when distances match (distance ties)
+					EXPECT_RESULT_EQ(indices[i][j], dists[i][j], indices2[i][j], dists2[i][j], 1);
 				}
 			}
 		}
@@ -419,6 +388,12 @@ protected:
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index.buildCUDAKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
 		EXPECT_EQ(index.size(), data.rows);
 
 		start_timer("Searching KNN...");
@@ -432,26 +407,6 @@ protected:
 		else {
 			precision = computePrecisionDiscrete(gt_dists, dists);
 		}
-
-		// Debug: Print first query results vs ground truth
-		printf("[DEBUG] Query 0 results:\n");
-		printf("  Got:      ");
-		for (size_t i = 0; i < knn && i < indices.cols; ++i) {
-			printf("%zu ", indices[0][i]);
-		}
-		printf("\n  Expected: ");
-		for (size_t i = 0; i < knn && i < gt_indices.cols; ++i) {
-			printf("%zu ", gt_indices[0][i]);
-		}
-		printf("\n  Got dists:      ");
-		for (size_t i = 0; i < knn && i < dists.cols; ++i) {
-			printf("%d ", (int)dists[0][i]);
-		}
-		printf("\n  Expected dists: ");
-		for (size_t i = 0; i < knn && i < gt_dists.cols; ++i) {
-			printf("%d ", (int)gt_dists[0][i]);
-		}
-		printf("\n");
 
 		EXPECT_GE(precision, expected_precision);
 		printf("Precision: %g\n", precision);
@@ -473,6 +428,12 @@ protected:
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index2.buildCUDAKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
 		EXPECT_EQ(index2.size(), data.rows);
 
 		flann::Matrix<size_t> indices2(new size_t[query.rows*knn], query.rows, knn);
@@ -486,7 +447,8 @@ protected:
 				if (retestDists) {
 					EXPECT_NEAR(dists[i][j], dists2[i][j], 6);
 				} else {
-					EXPECT_EQ(indices[i][j], indices2[i][j]);
+					// Allow index differences when distances match (distance ties)
+					EXPECT_RESULT_EQ(indices[i][j], dists[i][j], indices2[i][j], dists2[i][j], 1);
 				}
 			}
 		}
@@ -523,6 +485,12 @@ protected:
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index.buildCUDAKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
 		EXPECT_EQ(index.size(), data.rows);
 
 		start_timer("Searching KNN...");
@@ -552,6 +520,12 @@ protected:
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index2.buildCUDAKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
 		EXPECT_EQ(index2.size(), data.rows);
 
 		flann::Matrix<size_t> indices2(new size_t[query.rows*knn], query.rows, knn);
@@ -575,7 +549,8 @@ protected:
 				if (retestDists) {
 					EXPECT_NEAR(dists[i][j], dists2[i][j], 6);
 				} else {
-					EXPECT_EQ(indices[i][j], indices2[i][j]);
+					// Allow index differences when distances match (distance ties)
+					EXPECT_RESULT_EQ(indices[i][j], dists[i][j], indices2[i][j], dists2[i][j], 1);
 				}
 			}
 		}
@@ -824,6 +799,12 @@ protected:
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index.buildCUDAKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
 		start_timer("Searching KNN before removing points...");
 		index.knnSearch(query, indices, dists, knn, search_params );
 		printf("done (%g seconds)\n", stop_timer());
@@ -865,6 +846,12 @@ protected:
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index.buildCUDAKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
 		EXPECT_EQ(index.size(), new_size);
 
 		start_timer("Searching KNN after remove points...");
@@ -891,6 +878,12 @@ protected:
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index2.buildCUDAKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
 		EXPECT_EQ(index2.size(), new_size);
 
 		flann::Matrix<size_t> indices2(new size_t[query.rows*knn], query.rows, knn);
@@ -904,7 +897,8 @@ protected:
 				if (retestDists) {
 					EXPECT_NEAR(dists[i][j], dists2[i][j], 6);
 				} else {
-					EXPECT_EQ(indices[i][j], indices2[i][j]);
+					// Allow index differences when distances match (distance ties)
+					EXPECT_RESULT_EQ(indices[i][j], dists[i][j], indices2[i][j], dists2[i][j], 1);
 				}
 			}
 		}
@@ -918,6 +912,12 @@ protected:
 #ifdef FLANN_USE_OPENCL
 		start_timer("Set up OpenCL KNN...");
     	index.buildCLKnnSearch(knn, search_params);
+		printf("done (%g seconds)\n", stop_timer());
+#endif
+
+#ifdef FLANN_USE_CUDA
+		start_timer("Set up CUDA KNN...");
+    	index.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
 #endif
 
