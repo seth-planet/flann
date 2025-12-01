@@ -183,6 +183,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index.isGPUSearchReady()) << "GPU search setup failed";
 #endif
 
 		start_timer("Searching KNN...");
@@ -232,6 +233,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index.isGPUSearchReady()) << "GPU search setup failed";
 #endif
 
 		start_timer("Searching KNN...");
@@ -289,6 +291,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index.isGPUSearchReady()) << "GPU search setup failed";
 #endif
 
 		EXPECT_EQ(index.size(), data.rows);
@@ -329,6 +332,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index2.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index2.isGPUSearchReady()) << "GPU search setup failed for reloaded index";
 #endif
 
 		EXPECT_EQ(index2.size(), data.rows);
@@ -392,6 +396,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index.isGPUSearchReady()) << "GPU search setup failed";
 #endif
 
 		EXPECT_EQ(index.size(), data.rows);
@@ -432,6 +437,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index2.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index2.isGPUSearchReady()) << "GPU search setup failed for reloaded index";
 #endif
 
 		EXPECT_EQ(index2.size(), data.rows);
@@ -489,6 +495,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index.isGPUSearchReady()) << "GPU search setup failed";
 #endif
 
 		EXPECT_EQ(index.size(), data.rows);
@@ -524,6 +531,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index2.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index2.isGPUSearchReady()) << "GPU search setup failed for reloaded index";
 #endif
 
 		EXPECT_EQ(index2.size(), data.rows);
@@ -590,6 +598,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index.isGPUSearchReady()) << "GPU search setup failed";
 #endif
 
 		start_timer("Searching KNN...");
@@ -619,6 +628,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index2.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index2.isGPUSearchReady()) << "GPU search setup failed for reloaded index";
 #endif
 
 		start_timer("Searching KNN...");
@@ -649,6 +659,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index3.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index3.isGPUSearchReady()) << "GPU search setup failed for assigned index";
 #endif
 
 		start_timer("Searching KNN...");
@@ -698,6 +709,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index.isGPUSearchReady()) << "GPU search setup failed";
 #endif
 
 		start_timer("Searching KNN...");
@@ -727,6 +739,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index2.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index2.isGPUSearchReady()) << "GPU search setup failed for reloaded index";
 #endif
 
 		start_timer("Searching KNN...");
@@ -757,6 +770,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index3.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index3.isGPUSearchReady()) << "GPU search setup failed for assigned index";
 #endif
 
 		start_timer("Searching KNN...");
@@ -803,6 +817,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index.isGPUSearchReady()) << "GPU search setup failed";
 #endif
 
 		start_timer("Searching KNN before removing points...");
@@ -850,6 +865,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index.isGPUSearchReady()) << "GPU search setup failed";
 #endif
 
 		EXPECT_EQ(index.size(), new_size);
@@ -882,6 +898,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index2.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index2.isGPUSearchReady()) << "GPU search setup failed for reloaded index";
 #endif
 
 		EXPECT_EQ(index2.size(), new_size);
@@ -919,6 +936,7 @@ protected:
 		start_timer("Set up CUDA KNN...");
     	index.buildCUDAKnnSearch(knn, search_params);
 		printf("done (%g seconds)\n", stop_timer());
+		EXPECT_TRUE(index.isGPUSearchReady()) << "GPU search setup failed";
 #endif
 
 		EXPECT_EQ(index.size(), new_size);

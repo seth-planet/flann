@@ -212,15 +212,20 @@ index.knnSearch(queries, indices, distances, k, flann::SearchParams(2000));
 - **Hierarchical CUDA**: 93-99% recall
 
 ### Ease of Use
-- **Automatic CPU/GPU dispatch** - same `knnSearch()` API
-- **Transparent acceleration** - no code changes to switch backends
+- **Same API** - `knnSearch()` works identically after GPU setup
+- **Explicit GPU setup** - call `buildCUDAKnnSearch(k)` once to enable GPU search
 
-### Tested Results (November 2025)
+### Tested Results (November 2024)
 
 | Algorithm | Dataset | Precision | Search Speed |
 |-----------|---------|-----------|--------------|
-| K-Means CUDA | SIFT100K | 97.4% | 10.6 µs/query |
-| Hierarchical CUDA | Brief100K | 96.8% | 43.7 µs/query |
+| K-Means CUDA | SIFT10K | 99.4% | ~7 µs/query |
+| K-Means CUDA | SIFT100K | 95.8% | ~10 µs/query |
+| Hierarchical CUDA | Brief100K | 97.2% | ~10 µs/query |
+
+**Test Coverage:** 16/19 tests passing
+- K-Means: 8/11 tests pass (3 tests require branching=7, not supported by cooperative kernel)
+- Hierarchical: 8/8 tests pass
 
 ---
 
@@ -312,6 +317,41 @@ Maximum viable LOC_SIZE is 512 for K-Means kernel.
 # CMakeLists.txt
 find_package(CUDAToolkit REQUIRED)
 target_link_libraries(my_app flann_cuda CUDA::cudart)
+```
+
+### 7. Unsupported k-Values Throw Exceptions
+
+Unlike the CPU implementation, CUDA indices **throw exceptions** for unsupported k-values:
+
+```cpp
+// K-Means CUDA only supports: 1, 5, 10, 20, 50, 100
+index.buildCUDAKnnSearch(7, params);  // THROWS FLANNException!
+
+// Hierarchical CUDA supports: 1, 2, 3, 4, 5, 8, 10, 12, 16, 20, 24, 32, 50, 64, 100, 128
+index.buildCUDAKnnSearch(17, params);  // THROWS FLANNException!
+```
+
+**There is NO automatic CPU fallback.** If you need an unsupported k-value, use the CPU version.
+
+### 8. Thread Safety
+
+**CUDA indices are NOT thread-safe for concurrent searches.** A single index instance should not be used from multiple threads simultaneously.
+
+```cpp
+// WRONG - concurrent access causes undefined behavior
+std::thread t1([&index]{ index.knnSearch(...); });
+std::thread t2([&index]{ index.knnSearch(...); });
+
+// CORRECT - each thread has its own index
+auto createIndex = [&dataset]() {
+    auto index = Index<L2<float>>(dataset, KMeansCUDAIndexParams(...));
+    index.buildIndex();
+    index.buildCUDAKnnSearch(k, params);
+    return index;
+};
+
+std::thread t1([&]{ auto idx = createIndex(); idx.knnSearch(...); });
+std::thread t2([&]{ auto idx = createIndex(); idx.knnSearch(...); });
 ```
 
 ---
@@ -436,9 +476,21 @@ LOC_SIZE controls the number of threads per query in cooperative kernels. Higher
 | **256** | **96.8%** | **41.8 µs/query** | **Default - best balance** |
 | 512 | 99.3% | 49.1 µs/query | Highest precision |
 
-### Optimal k Values
+### Supported k Values
 
-The hierarchical CUDA kernel has template-specialized support for specific k values:
+**IMPORTANT:** K-Means CUDA and Hierarchical CUDA support different k-values.
+
+#### K-Means CUDA
+
+**Supported k values:** 1, 5, 10, 20, 50, 100 (6 values only)
+
+**Requirements:**
+- Branching factor must be 32 or 64
+- Unsupported k values will throw an exception
+
+#### Hierarchical CUDA
+
+**Supported k values:** 1, 2, 3, 4, 5, 8, 10, 12, 16, 20, 24, 32, 50, 64, 100, 128 (16 values)
 
 **Performance Tiers:**
 

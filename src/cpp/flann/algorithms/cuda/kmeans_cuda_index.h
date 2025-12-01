@@ -308,6 +308,15 @@ public:
                                "Call buildIndex() first.");
         }
 
+        // Validate k value is supported by cooperative kernel
+        // K-Means CUDA supports: 1, 5, 10, 20, 50, 100
+        if (knn != 1 && knn != 5 && knn != 10 && knn != 20 && knn != 50 && knn != 100) {
+            throw FLANNException(
+                "Unsupported k=" + std::to_string(knn) + " for CUDA K-Means search.\n"
+                "Supported k values: 1, 5, 10, 20, 50, 100\n"
+                "Use a supported k value or fall back to CPU search.");
+        }
+
         // Upload tree to GPU if not already done
         if (!gpu_initialized_) {
             uploadToGPU();
@@ -323,6 +332,16 @@ public:
         // By running a single warmup query during setup, we amortize this cost
         // and make the first real search as fast as subsequent ones.
         warmupKernel(knn, params);
+    }
+
+    /**
+     * @brief Check if GPU search is ready
+     *
+     * @return true if buildCUDAKnnSearch() has been called and GPU is ready
+     */
+    bool isGPUSearchReady() const
+    {
+        return gpu_search_ready_;
     }
 
     /**
@@ -354,29 +373,55 @@ public:
         int heap_size = calculateHeapSize(knn, max_checks);
         int loc_size = getCUDALocSize(0);
 
-        // Launch kernel (triggers JIT compilation)
-        bool use_cooperative = (heap_size <= loc_size && this->branching_ == 32);
+        // Launch kernel (triggers JIT compilation for the specific k value)
+        bool use_cooperative = (heap_size <= loc_size && (this->branching_ == 32 || this->branching_ == 64));
         if (use_cooperative) {
-            // Cooperative kernel warmup
-            dim3 grid(1);
-            dim3 block(loc_size);
-
-            launch_kmeans_search_cooperative<5>(
-                (const float*)dataset_gpu_.get(),
-                (const float*)queries_gpu.get(),
-                node_index_gpu_.get(),
-                (const float*)tree_pivots_gpu_.get(),
-                node_variance_gpu_.get(),
-                indices_gpu.get(),
-                dists_gpu.get(),
-                1,  // num_queries
-                padded_veclen_,
-                num_nodes_,
-                heap_size,
-                loc_size,
-                this->branching_,
-                this->cb_index_
-            );
+            // Cooperative kernel warmup - dispatch based on actual knn value
+            // Use the same dispatch as knnSearchGPUImpl to ensure JIT for correct template
+            if (knn == 1) {
+                launch_kmeans_search_cooperative<1>(
+                    (const float*)dataset_gpu_.get(), (const float*)queries_gpu.get(),
+                    node_index_gpu_.get(), (const float*)tree_pivots_gpu_.get(),
+                    node_variance_gpu_.get(), indices_gpu.get(), dists_gpu.get(),
+                    1, padded_veclen_, num_nodes_, heap_size, loc_size,
+                    this->branching_, this->cb_index_);
+            } else if (knn == 5) {
+                launch_kmeans_search_cooperative<5>(
+                    (const float*)dataset_gpu_.get(), (const float*)queries_gpu.get(),
+                    node_index_gpu_.get(), (const float*)tree_pivots_gpu_.get(),
+                    node_variance_gpu_.get(), indices_gpu.get(), dists_gpu.get(),
+                    1, padded_veclen_, num_nodes_, heap_size, loc_size,
+                    this->branching_, this->cb_index_);
+            } else if (knn == 10) {
+                launch_kmeans_search_cooperative<10>(
+                    (const float*)dataset_gpu_.get(), (const float*)queries_gpu.get(),
+                    node_index_gpu_.get(), (const float*)tree_pivots_gpu_.get(),
+                    node_variance_gpu_.get(), indices_gpu.get(), dists_gpu.get(),
+                    1, padded_veclen_, num_nodes_, heap_size, loc_size,
+                    this->branching_, this->cb_index_);
+            } else if (knn == 20) {
+                launch_kmeans_search_cooperative<20>(
+                    (const float*)dataset_gpu_.get(), (const float*)queries_gpu.get(),
+                    node_index_gpu_.get(), (const float*)tree_pivots_gpu_.get(),
+                    node_variance_gpu_.get(), indices_gpu.get(), dists_gpu.get(),
+                    1, padded_veclen_, num_nodes_, heap_size, loc_size,
+                    this->branching_, this->cb_index_);
+            } else if (knn == 50) {
+                launch_kmeans_search_cooperative<50>(
+                    (const float*)dataset_gpu_.get(), (const float*)queries_gpu.get(),
+                    node_index_gpu_.get(), (const float*)tree_pivots_gpu_.get(),
+                    node_variance_gpu_.get(), indices_gpu.get(), dists_gpu.get(),
+                    1, padded_veclen_, num_nodes_, heap_size, loc_size,
+                    this->branching_, this->cb_index_);
+            } else if (knn == 100) {
+                launch_kmeans_search_cooperative<100>(
+                    (const float*)dataset_gpu_.get(), (const float*)queries_gpu.get(),
+                    node_index_gpu_.get(), (const float*)tree_pivots_gpu_.get(),
+                    node_variance_gpu_.get(), indices_gpu.get(), dists_gpu.get(),
+                    1, padded_veclen_, num_nodes_, heap_size, loc_size,
+                    this->branching_, this->cb_index_);
+            }
+            // Note: Unsupported k values will fail in knnSearchGPUImpl with clear error
         }
 
         // Sync to ensure kernel completes (and JIT finishes)
@@ -1029,7 +1074,8 @@ protected:
             }
         }
 
-        // Verify arithmetic layout (optional debug check)
+        // Verify arithmetic layout - MUST match for GPU kernel to work correctly
+        int mismatch_count = 0;
         for (const auto& entry : node_to_index) {
             Node* node = entry.first;
             int idx = entry.second;
@@ -1037,11 +1083,14 @@ protected:
                 int first_child_expected = idx * this->branching_ + 1;  // +1 offset
                 int first_child_actual = node_to_index[node->childs[0]];
                 if (first_child_expected != first_child_actual) {
-                    std::cerr << "[WARNING] Node " << idx << " arithmetic layout mismatch: "
-                              << "expected child at " << first_child_expected
-                              << ", got " << first_child_actual << "\n";
+                    ++mismatch_count;
                 }
             }
+        }
+        if (mismatch_count > 0) {
+            throw FLANNException("Tree arithmetic layout validation failed: " +
+                std::to_string(mismatch_count) + " node mismatches detected. "
+                "GPU kernel requires exact arithmetic tree layout.");
         }
     }
 

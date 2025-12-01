@@ -229,6 +229,50 @@ TEST_F(KMeansCUDA_SIFT100K, TestAddIncremental2)
 }
 
 
+// ============================================================================
+// Error Handling Tests
+// ============================================================================
+
+/**
+ * Test: Unsupported k-value throws exception
+ * K-Means CUDA only supports k values: 1, 5, 10, 20, 50, 100
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestInvalidKValueThrows)
+{
+    flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+
+    // k=7 is not supported by cooperative kernel
+    EXPECT_THROW(index.buildCUDAKnnSearch(7, flann::SearchParams(128)), FLANNException);
+
+    // k=15 is not supported
+    EXPECT_THROW(index.buildCUDAKnnSearch(15, flann::SearchParams(128)), FLANNException);
+}
+
+/**
+ * Test: GPU setup before buildIndex throws exception
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestGPUSetupBeforeBuildThrows)
+{
+    flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+
+    // Should throw because buildIndex() not called
+    EXPECT_THROW(index.buildCUDAKnnSearch(5, flann::SearchParams(128)), FLANNException);
+}
+
+/**
+ * Test: Supported k-value succeeds
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestValidKValueSucceeds)
+{
+    flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+
+    // k=5 is supported
+    EXPECT_NO_THROW(index.buildCUDAKnnSearch(5, flann::SearchParams(128)));
+    EXPECT_TRUE(index.isGPUSearchReady());
+}
+
 int main(int argc, char** argv)
 {
     testing::InitGoogleTest(&argc, argv);

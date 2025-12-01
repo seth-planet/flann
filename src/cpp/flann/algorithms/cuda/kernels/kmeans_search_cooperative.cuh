@@ -701,7 +701,10 @@ bool launch_kmeans_search_cooperative(
     int branching,  // Add branching factor parameter
     float cb_index
 ) {
-    (void)heap_size;  // Currently unused - kernel uses template-based heap sizing
+    // heap_size is unused in CUDA implementation. Kept for API parity with OpenCL.
+    // CUDA uses template parameter K for compile-time heap sizing (better performance).
+    // OpenCL uses dynamic heap_size (runtime flexibility, but slower).
+    (void)heap_size;
 
     dim3 grid(num_queries);   // One block per query
     dim3 block(loc_size);     // LOC_SIZE threads per block

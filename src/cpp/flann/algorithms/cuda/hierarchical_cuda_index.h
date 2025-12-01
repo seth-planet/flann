@@ -37,6 +37,9 @@
 #include <cstring>  // For strlen
 #include <unistd.h>  // For write
 #include <cuda_runtime.h>
+#ifndef NDEBUG
+#include <atomic>
+#endif
 
 #include "flann/algorithms/hierarchical_clustering_index.h"
 #include "flann/algorithms/cuda/cuda_utils.h"
@@ -354,13 +357,27 @@ public:
                 gpu_num_trees_,
                 this->branching_
             );
-            if (success) {
-                // Wait for JIT compilation to complete
-                cudaDeviceSynchronize();
+            if (!success) {
+                throw FLANNException(
+                    "Unsupported k=" + std::to_string(knn) + " for CUDA hierarchical search.\n"
+                    "Supported k values: 1, 2, 3, 4, 5, 8, 10, 12, 16, 20, 24, 32, 50, 64, 100, 128\n"
+                    "Use a supported k value or fall back to CPU search.");
             }
+            // Wait for JIT compilation to complete
+            cudaDeviceSynchronize();
         }
 
         gpu_search_ready_ = true;
+    }
+
+    /**
+     * @brief Check if GPU search is ready
+     *
+     * @return true if buildCUDAKnnSearch() has been called and GPU is ready
+     */
+    bool isGPUSearchReady() const
+    {
+        return gpu_search_ready_;
     }
 
     /**
@@ -783,6 +800,20 @@ protected:
             throw FLANNException("Index not built or GPU data not uploaded");
         }
 
+#ifndef NDEBUG
+        // Thread safety check (debug builds only)
+        bool expected = false;
+        if (!search_in_progress_.compare_exchange_strong(expected, true)) {
+            throw FLANNException("Concurrent search detected - HierarchicalCUDAIndex is NOT thread-safe. "
+                "Each thread should have its own index instance.");
+        }
+        // RAII guard to reset flag on exit
+        struct SearchGuard {
+            std::atomic<bool>& flag;
+            ~SearchGuard() { flag.store(false, std::memory_order_release); }
+        } guard{search_in_progress_};
+#endif
+
         size_t num_queries = queries.rows;
 
         // Validate dimensions
@@ -885,6 +916,11 @@ private:
 
     bool gpu_initialized_;      ///< True if GPU buffers allocated and uploaded
     bool gpu_search_ready_;     ///< True if buildCUDAKnnSearch() was called
+
+#ifndef NDEBUG
+    // Thread safety detection (debug builds only)
+    mutable std::atomic<bool> search_in_progress_{false};
+#endif
     int gpu_num_trees_;         ///< Number of trees (tree roots are nodes 0..num_trees-1)
 
     // GPU buffers (RAII wrappers for automatic cleanup)

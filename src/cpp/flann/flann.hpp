@@ -463,6 +463,28 @@ public:
             "Supported: FLANN_INDEX_KMEANS, FLANN_INDEX_KMEANS_CUDA, "
             "FLANN_INDEX_HIERARCHICAL, FLANN_INDEX_HIERARCHICAL_CUDA.");
     }
+
+    /**
+     * Check if GPU search is ready
+     * @return true if buildCUDAKnnSearch() has been called and GPU is ready
+     */
+    bool isGPUSearchReady() const
+    {
+        flann_algorithm_t index_type = nnIndex_->getType();
+
+        if (index_type == FLANN_INDEX_KMEANS_CUDA) {
+            return static_cast<cuda::KMeansCUDAIndex<Distance>*>(
+                nnIndex_)->isGPUSearchReady();
+        }
+
+        if (index_type == FLANN_INDEX_HIERARCHICAL_CUDA) {
+            return static_cast<cuda::HierarchicalCUDAIndex<Distance>*>(
+                nnIndex_)->isGPUSearchReady();
+        }
+
+        // Non-CUDA index types are never GPU-ready
+        return false;
+    }
 #endif /* FLANN_USE_CUDA */
 
 private:
