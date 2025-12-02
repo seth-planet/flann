@@ -418,7 +418,7 @@ This fork includes CUDA-accelerated implementations of nearest neighbor search a
 **Performance Characteristics:**
 - Best for large datasets (>10K points) and high dimensions (>32D)
 - Precision: **97.2%** (Hierarchical), **99.4%** (K-Means SIFT10K), **95.8%** (K-Means SIFT100K)
-- Test coverage: **16/19 tests passing** (3 K-Means tests require branching=7, not supported by cooperative kernel)
+- Test coverage: **27/27 tests passing** (15 K-Means + 12 Hierarchical)
 - Memory: Zero leaks confirmed with compute-sanitizer
 
 ### Building with CUDA
@@ -609,39 +609,46 @@ Recommendation: Use k that is multiple of 4 for best performance.
 
 ### Test Results
 
-**K-Means CUDA (8/11 tests PASSED):**
+**K-Means CUDA (15/15 tests PASSED):**
 ```
-SIFT10K Dataset:
-- TestSearch:          FAIL (branching=7 not supported by cooperative kernel)
-- TestSearch2:         99.4% precision  ✓ (branching=64)
-- TestAddIncremental:  PASS             ✓
-- TestAddIncremental2: PASS             ✓
-- TestCopy:            FAIL (branching=7)
-- TestCopy2:           FAIL (branching=7)
-- TestRemove:          PASS             ✓
-- TestSave:            PASS             ✓
+SIFT10K Dataset (branching=32/64):
+- TestSearch:          99.36% precision  ✓
+- TestSearch2:         99.42% precision  ✓ (branching=64)
+- TestAddIncremental:  99.46% precision  ✓
+- TestAddIncremental2: 99.3% precision   ✓
+- TestCopy:            99.36% precision  ✓
+- TestCopy2:           99.36% precision  ✓
+- TestRemove:          PASS              ✓
+- TestSave:            99.36% precision  ✓
+- TestInvalidKValueThrows:      PASS     ✓
+- TestGPUSetupBeforeBuildThrows: PASS    ✓
+- TestValidKValueSucceeds:      PASS     ✓
+- TestBoundaryKValues:          PASS     ✓
 
 SIFT100K Dataset (branching=32):
-- TestSearch:          97.4% precision  ✓
-- TestAddIncremental:  PASS             ✓
-- TestAddIncremental2: PASS             ✓
+- TestSearch:          95.8% precision  ✓
+- TestAddIncremental:  96.3% precision  ✓
+- TestAddIncremental2: 96.3% precision  ✓
 
-Note: 3 tests fail because they use branching=7, which requires LOC_SIZE
-to be a multiple of 7. The cooperative kernel uses LOC_SIZE=128 for optimal
-precision/performance. These tests would need a single-threaded kernel fallback.
+Note: K-Means CUDA requires branching=32 or branching=64 (LOC_SIZE must be
+multiple of branching). Use CPU KMeansIndex for other branching factors.
 ```
 
-**Hierarchical CUDA (8/8 tests PASSED):**
+**Hierarchical CUDA (12/12 tests PASSED):**
 ```
-Brief100K Dataset:
+Brief100K Dataset (branching=32):
 - TestSearch:          97.17% precision ✓
 - TestSearch2:         97.17% precision ✓
-- TestAddIncremental:  97.17% precision ✓
+- TestAddIncremental:  97.1% precision  ✓
+- TestAddIncremental2: 96.3% precision  ✓
 - TestCopy:            97.17% precision ✓
 - TestCopy2:           97.17% precision ✓
-- TestRemove:          PASSED           ✓
-- TestSave:            PASS             ✓
-- TestAddIncremental2: PASS             ✓
+- TestRemove:          PASS             ✓
+- TestSave:            97.17% precision ✓
+- TestInvalidKValueThrows:      PASS    ✓
+- TestGPUSetupBeforeBuildThrows: PASS   ✓
+- TestValidKValueSucceeds:      PASS    ✓
+- TestBoundaryKValues:          PASS    ✓
 ```
 
 ### Troubleshooting
@@ -685,6 +692,8 @@ sudo apt-get install nvidia-cuda-toolkit
 3. **Thread Safety:** CUDA indices are NOT thread-safe for concurrent searches. Each thread should have its own index instance, or external synchronization must be used.
 
 4. **Binary Compilation:** CUDA kernels compile at build time but may require architecture-specific tuning for optimal performance.
+
+5. **K-Means Branching Factor:** CUDA K-Means requires `branching=32` or `branching=64`. This is because the cooperative kernel uses LOC_SIZE=128 threads per query, which must be a multiple of the branching factor. For other branching factors (e.g., branching=7), use CPU `KMeansIndex` or OpenCL `KMeansOpenCLIndex` instead.
 
 ### Implementation Details
 

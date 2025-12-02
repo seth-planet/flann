@@ -120,23 +120,23 @@ TEST_F(HierarchicalCUDA_Brief100K, TestSearch2)
 /**
  * Test 3: Incremental Point Addition
  * Add points incrementally and verify search still works
- * Expected: ≥91% recall@3 (actual typically ~97%)
+ * Expected: ≥94% recall@3 (verified actual: ~97.1%)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestAddIncremental)
 {
 	TestAddIncremental<Distance>(data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100),
-			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.91, gt_indices, gt_dists);
+			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.94, gt_indices, gt_dists);
 }
 
 /**
  * Test 4: Incremental Addition with Rebuild
  * Test rebuild threshold triggering
- * Expected: ≥91% recall@3 (actual typically ~96%)
+ * Expected: ≥93% recall@3 (verified actual: ~96.3%)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestAddIncremental2)
 {
 	TestAddIncremental2<Distance>(data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100),
-			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.91, gt_indices, gt_dists);
+			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.93, gt_indices, gt_dists);
 }
 
 /**
@@ -152,44 +152,34 @@ TEST_F(HierarchicalCUDA_Brief100K, TestRemove)
 /**
  * Test 6: Save/Load Index
  * Verify index serialization and deserialization
- *
- * Threshold: ≥90% recall@3 (vs 94% for base search)
- * The 4% lower threshold accounts for:
- * - Minor floating-point differences from serialization
- * - GPU buffer re-upload after index reload
- * - Non-deterministic order of equivalent-distance neighbors
- * Actual precision typically ~97%, well above threshold.
+ * Expected: ≥94% recall@3 (verified actual: ~97.17%)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestSave)
 {
 	TestSave<Distance>(data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100),
-			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.90, gt_indices, gt_dists);
+			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.94, gt_indices, gt_dists);
 }
 
 /**
  * Test 7: Copy Constructor
  * Verify copy constructor creates independent index
- *
- * Threshold: ≥90% recall@3 (4% lower than base search)
- * Lower threshold accounts for GPU re-upload after copy.
+ * Expected: ≥94% recall@3 (verified actual: ~97.17%)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestCopy)
 {
 	TestCopy<Distance>(data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100),
-			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.90, gt_indices, gt_dists);
+			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.94, gt_indices, gt_dists);
 }
 
 /**
  * Test 8: Move Constructor
  * Verify move constructor transfers ownership correctly
- *
- * Threshold: ≥90% recall@3 (4% lower than base search)
- * Lower threshold accounts for GPU re-upload after copy/move.
+ * Expected: ≥94% recall@3 (verified actual: ~97.17%)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestCopy2)
 {
 	TestCopy2<flann::cuda::HierarchicalCUDAIndex<Distance> >(data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100),
-			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.90, gt_indices, gt_dists);
+			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.94, gt_indices, gt_dists);
 }
 
 
@@ -238,18 +228,86 @@ TEST_F(HierarchicalCUDA_Brief100K, TestValidKValueSucceeds)
 }
 
 /**
- * Test: Boundary k-values (minimum and maximum)
+ * Test: Boundary k-values (minimum and maximum) with precision verification
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestBoundaryKValues)
 {
 	flann::Index<Distance> index(data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100));
 	index.buildIndex();
 
-	// k=1 (minimum)
-	EXPECT_NO_THROW(index.buildCUDAKnnSearch(1, flann::SearchParams(2000)));
+	// Compute ground truth using linear index
+	flann::Index<Distance> linear_index(data, flann::LinearIndexParams());
+	linear_index.buildIndex();
 
-	// k=128 (maximum supported)
-	EXPECT_NO_THROW(index.buildCUDAKnnSearch(128, flann::SearchParams(2000)));
+	// Test k=1 (minimum) with precision verification
+	{
+		const unsigned int k = 1;
+		flann::Matrix<size_t> indices_k1(new size_t[query.rows * k], query.rows, k);
+		flann::Matrix<DistanceType> dists_k1(new DistanceType[query.rows * k], query.rows, k);
+		flann::Matrix<size_t> gt_indices_k1(new size_t[query.rows * k], query.rows, k);
+		flann::Matrix<DistanceType> gt_dists_k1(new DistanceType[query.rows * k], query.rows, k);
+
+		// Compute ground truth
+		linear_index.knnSearch(query, gt_indices_k1, gt_dists_k1, k, flann::SearchParams(-1));
+
+		// Run CUDA search
+		EXPECT_NO_THROW(index.buildCUDAKnnSearch(k, flann::SearchParams(2000)));
+		EXPECT_TRUE(index.isGPUSearchReady());
+		index.knnSearch(query, indices_k1, dists_k1, k, flann::SearchParams(2000));
+
+		// Verify validity
+		for (size_t i = 0; i < query.rows; ++i) {
+			EXPECT_LT(indices_k1[i][0], data.rows);
+		}
+
+		// Verify precision (k=1 with Hamming distance may have lower precision due to ties)
+		float precision = compute_precision(gt_indices_k1, indices_k1);
+		EXPECT_GE(precision, 0.85f) << "k=1 precision " << precision << " below 85% threshold";
+		printf("k=1 precision: %.2f%%\n", precision * 100);
+
+		delete[] indices_k1.ptr();
+		delete[] dists_k1.ptr();
+		delete[] gt_indices_k1.ptr();
+		delete[] gt_dists_k1.ptr();
+	}
+
+	// Test k=128 (maximum supported) with precision verification
+	{
+		const unsigned int k = 128;
+		flann::Matrix<size_t> indices_k128(new size_t[query.rows * k], query.rows, k);
+		flann::Matrix<DistanceType> dists_k128(new DistanceType[query.rows * k], query.rows, k);
+		flann::Matrix<size_t> gt_indices_k128(new size_t[query.rows * k], query.rows, k);
+		flann::Matrix<DistanceType> gt_dists_k128(new DistanceType[query.rows * k], query.rows, k);
+
+		// Compute ground truth
+		linear_index.knnSearch(query, gt_indices_k128, gt_dists_k128, k, flann::SearchParams(-1));
+
+		// Run CUDA search
+		EXPECT_NO_THROW(index.buildCUDAKnnSearch(k, flann::SearchParams(2000)));
+		EXPECT_TRUE(index.isGPUSearchReady());
+		index.knnSearch(query, indices_k128, dists_k128, k, flann::SearchParams(2000));
+
+		// Verify validity and sorting
+		for (size_t i = 0; i < query.rows; ++i) {
+			for (size_t j = 0; j < k; ++j) {
+				EXPECT_LT(indices_k128[i][j], data.rows);
+			}
+			for (size_t j = 1; j < k; ++j) {
+				EXPECT_GE(dists_k128[i][j], dists_k128[i][j-1])
+					<< "Distances not sorted at query " << i << ", position " << j;
+			}
+		}
+
+		// Verify precision (k=128 may have slightly lower precision due to larger k)
+		float precision = compute_precision(gt_indices_k128, indices_k128);
+		EXPECT_GE(precision, 0.80f) << "k=128 precision " << precision << " below 80% threshold";
+		printf("k=128 precision: %.2f%%\n", precision * 100);
+
+		delete[] indices_k128.ptr();
+		delete[] dists_k128.ptr();
+		delete[] gt_indices_k128.ptr();
+		delete[] gt_dists_k128.ptr();
+	}
 }
 
 int main(int argc, char** argv)

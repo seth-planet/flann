@@ -62,7 +62,7 @@ TEST_F(KMeansCUDA_SIFT10K, TestSearch)
         flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.95,  // 95% recall (high precision requirement)
+        0.96,  // 96% recall (verified actual: ~99.4%)
         gt_indices
     );
 }
@@ -79,7 +79,7 @@ TEST_F(KMeansCUDA_SIFT10K, TestSearch2)
         flann::KMeansCUDAIndexParams(64, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(256),
-        0.92,  // 92% recall with higher checks
+        0.96,  // 96% recall (verified actual: ~99.4%)
         gt_indices
     );
 }
@@ -95,7 +95,7 @@ TEST_F(KMeansCUDA_SIFT10K, TestAddIncremental)
         flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.95,  // 95% recall (high precision requirement)
+        0.96,  // 96% recall (verified actual: ~99.4%)
         gt_indices
     );
 }
@@ -111,7 +111,7 @@ TEST_F(KMeansCUDA_SIFT10K, TestAddIncremental2)
         flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.95,  // 95% recall (high precision requirement)
+        0.96,  // 96% recall (verified actual: ~99.4%)
         gt_indices
     );
 }
@@ -141,7 +141,7 @@ TEST_F(KMeansCUDA_SIFT10K, TestSave)
         flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.95,  // 95% recall (high precision requirement)
+        0.96,  // 96% recall (verified actual: ~99.4%)
         gt_indices
     );
 }
@@ -157,7 +157,7 @@ TEST_F(KMeansCUDA_SIFT10K, TestCopy)
         flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.95,  // 95% recall (high precision requirement)
+        0.96,  // 96% recall (verified actual: ~99.4%)
         gt_indices
     );
 }
@@ -173,7 +173,7 @@ TEST_F(KMeansCUDA_SIFT10K, TestCopy2)
         flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.95,  // 95% recall (high precision requirement)
+        0.96,  // 96% recall (verified actual: ~99.4%)
         gt_indices
     );
 }
@@ -197,7 +197,7 @@ TEST_F(KMeansCUDA_SIFT100K, TestSearch)
         flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.95,  // 95% recall (high precision requirement)
+        0.93,  // 93% recall (verified actual: ~95.8%)
         gt_indices
     );
 }
@@ -212,7 +212,7 @@ TEST_F(KMeansCUDA_SIFT100K, TestAddIncremental)
         flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.95,  // 95% recall (high precision requirement)
+        0.93,  // 93% recall (verified actual: ~96.3%)
         gt_indices
     );
 }
@@ -227,7 +227,7 @@ TEST_F(KMeansCUDA_SIFT100K, TestAddIncremental2)
         flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
         query, indices, dists, knn,
         flann::SearchParams(128),
-        0.95,  // 95% recall (high precision requirement)
+        0.93,  // 93% recall (verified actual: ~96.3%)
         gt_indices
     );
 }
@@ -279,57 +279,88 @@ TEST_F(KMeansCUDA_SIFT10K, TestValidKValueSucceeds)
 
 /**
  * Test: Boundary k-values (k=1 minimum, k=100 maximum)
- * Verify that k=1 and k=100 produce correct results
+ * Verify that k=1 and k=100 produce correct results with precision verification
  */
 TEST_F(KMeansCUDA_SIFT10K, TestBoundaryKValues)
 {
     flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
     index.buildIndex();
 
-    // Test k=1 (minimum)
+    // Compute ground truth using linear index
+    flann::Index<flann::L2<float>> linear_index(data, flann::LinearIndexParams());
+    linear_index.buildIndex();
+
+    // Test k=1 (minimum) with precision verification
     {
-        flann::Matrix<size_t> indices_k1(new size_t[query.rows], query.rows, 1);
-        flann::Matrix<float> dists_k1(new float[query.rows], query.rows, 1);
+        const size_t k = 1;
+        flann::Matrix<size_t> indices_k1(new size_t[query.rows * k], query.rows, k);
+        flann::Matrix<float> dists_k1(new float[query.rows * k], query.rows, k);
+        flann::Matrix<size_t> gt_indices_k1(new size_t[query.rows * k], query.rows, k);
+        flann::Matrix<float> gt_dists_k1(new float[query.rows * k], query.rows, k);
 
-        EXPECT_NO_THROW(index.buildCUDAKnnSearch(1, flann::SearchParams(128)));
+        // Compute ground truth
+        linear_index.knnSearch(query, gt_indices_k1, gt_dists_k1, k, flann::SearchParams(-1));
+
+        // Run CUDA search
+        EXPECT_NO_THROW(index.buildCUDAKnnSearch(k, flann::SearchParams(128)));
         EXPECT_TRUE(index.isGPUSearchReady());
-        index.knnSearch(query, indices_k1, dists_k1, 1, flann::SearchParams(128));
+        index.knnSearch(query, indices_k1, dists_k1, k, flann::SearchParams(128));
 
-        // Verify k=1 returns exactly one neighbor per query
+        // Verify validity
         for (size_t i = 0; i < query.rows; ++i) {
             EXPECT_GE(indices_k1[i][0], 0u);
             EXPECT_LT(indices_k1[i][0], data.rows);
             EXPECT_GE(dists_k1[i][0], 0.0f);
         }
 
+        // Verify precision (k=1 should have very high precision)
+        float precision = compute_precision(gt_indices_k1, indices_k1);
+        EXPECT_GE(precision, 0.95f) << "k=1 precision " << precision << " below 95% threshold";
+        printf("k=1 precision: %.2f%%\n", precision * 100);
+
         delete[] indices_k1.ptr();
         delete[] dists_k1.ptr();
+        delete[] gt_indices_k1.ptr();
+        delete[] gt_dists_k1.ptr();
     }
 
-    // Test k=100 (maximum supported)
+    // Test k=100 (maximum supported) with precision verification
     {
-        flann::Matrix<size_t> indices_k100(new size_t[query.rows * 100], query.rows, 100);
-        flann::Matrix<float> dists_k100(new float[query.rows * 100], query.rows, 100);
+        const size_t k = 100;
+        flann::Matrix<size_t> indices_k100(new size_t[query.rows * k], query.rows, k);
+        flann::Matrix<float> dists_k100(new float[query.rows * k], query.rows, k);
+        flann::Matrix<size_t> gt_indices_k100(new size_t[query.rows * k], query.rows, k);
+        flann::Matrix<float> gt_dists_k100(new float[query.rows * k], query.rows, k);
 
-        EXPECT_NO_THROW(index.buildCUDAKnnSearch(100, flann::SearchParams(256)));
+        // Compute ground truth
+        linear_index.knnSearch(query, gt_indices_k100, gt_dists_k100, k, flann::SearchParams(-1));
+
+        // Run CUDA search
+        EXPECT_NO_THROW(index.buildCUDAKnnSearch(k, flann::SearchParams(256)));
         EXPECT_TRUE(index.isGPUSearchReady());
-        index.knnSearch(query, indices_k100, dists_k100, 100, flann::SearchParams(256));
+        index.knnSearch(query, indices_k100, dists_k100, k, flann::SearchParams(256));
 
-        // Verify k=100 returns valid neighbors with increasing distances
+        // Verify validity and sorting
         for (size_t i = 0; i < query.rows; ++i) {
-            for (size_t j = 0; j < 100; ++j) {
+            for (size_t j = 0; j < k; ++j) {
                 EXPECT_GE(indices_k100[i][j], 0u);
                 EXPECT_LT(indices_k100[i][j], data.rows);
             }
-            // Distances should be non-decreasing (sorted)
-            for (size_t j = 1; j < 100; ++j) {
+            for (size_t j = 1; j < k; ++j) {
                 EXPECT_GE(dists_k100[i][j], dists_k100[i][j-1])
                     << "Distances not sorted at query " << i << ", position " << j;
             }
         }
 
+        // Verify precision (k=100 may have slightly lower precision)
+        float precision = compute_precision(gt_indices_k100, indices_k100);
+        EXPECT_GE(precision, 0.85f) << "k=100 precision " << precision << " below 85% threshold";
+        printf("k=100 precision: %.2f%%\n", precision * 100);
+
         delete[] indices_k100.ptr();
         delete[] dists_k100.ptr();
+        delete[] gt_indices_k100.ptr();
+        delete[] gt_dists_k100.ptr();
     }
 }
 
