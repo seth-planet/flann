@@ -551,7 +551,7 @@ Hierarchical (Brief 256-bit, NVIDIA GPU):
 
 #### K-Means CUDA K-Value Support
 
-**Supported k values:** 1, 5, 10, 20, 50, 100 (6 values only)
+**Supported k values:** 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100 (13 values)
 
 K-Means CUDA requires `branching=32` or `branching=64`. Unsupported k values will throw an exception.
 
@@ -690,7 +690,7 @@ sudo apt-get install nvidia-cuda-toolkit
 
 **Files:**
 - `src/cpp/flann/algorithms/cuda/kmeans_cuda_index.h` - K-Means CUDA implementation (~739 lines)
-- `src/cpp/flann/algorithms/cuda/hierarchical_cuda_index.h` - Hierarchical clustering (~856 lines)
+- `src/cpp/flann/algorithms/cuda/hierarchical_cuda_index.h` - Hierarchical clustering (~891 lines)
 - `src/cpp/flann/algorithms/cuda/kernels/hierarchical_search_cooperative.cuh` - Cooperative kernel (~629 lines)
 - `src/cpp/flann/algorithms/cuda/kernels/kmeans_search_kernel.cuh` - K-Means kernel (~530 lines)
 - `src/cpp/flann/algorithms/cuda/cuda_utils.h` - CUDA infrastructure (~364 lines)
@@ -701,6 +701,7 @@ sudo apt-get install nvidia-cuda-toolkit
 - Template specialization for different distance metrics
 - Shared memory optimization for parallel heap management
 - Vectorized distance computations (float4 for L2)
+- Per-search GPU buffer allocation (eliminates batch size limits, minimal overhead)
 
 **Key Features:**
 - Zero memory leaks (verified with compute-sanitizer)

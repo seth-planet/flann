@@ -309,11 +309,12 @@ public:
         }
 
         // Validate k value is supported by cooperative kernel
-        // K-Means CUDA supports: 1, 5, 10, 20, 50, 100
-        if (knn != 1 && knn != 5 && knn != 10 && knn != 20 && knn != 50 && knn != 100) {
+        // K-Means CUDA supports: 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100
+        if (knn != 1 && knn != 2 && knn != 4 && knn != 5 && knn != 7 && knn != 8 &&
+            knn != 10 && knn != 16 && knn != 20 && knn != 32 && knn != 50 && knn != 64 && knn != 100) {
             throw FLANNException(
                 "Unsupported k=" + std::to_string(knn) + " for CUDA K-Means search.\n"
-                "Supported k values: 1, 5, 10, 20, 50, 100\n"
+                "Supported k values: 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100\n"
                 "Use a supported k value or fall back to CPU search.");
         }
 
@@ -378,50 +379,30 @@ public:
         if (use_cooperative) {
             // Cooperative kernel warmup - dispatch based on actual knn value
             // Use the same dispatch as knnSearchGPUImpl to ensure JIT for correct template
-            if (knn == 1) {
-                launch_kmeans_search_cooperative<1>(
-                    (const float*)dataset_gpu_.get(), (const float*)queries_gpu.get(),
-                    node_index_gpu_.get(), (const float*)tree_pivots_gpu_.get(),
-                    node_variance_gpu_.get(), indices_gpu.get(), dists_gpu.get(),
-                    1, padded_veclen_, num_nodes_, heap_size, loc_size,
-                    this->branching_, this->cb_index_);
-            } else if (knn == 5) {
-                launch_kmeans_search_cooperative<5>(
-                    (const float*)dataset_gpu_.get(), (const float*)queries_gpu.get(),
-                    node_index_gpu_.get(), (const float*)tree_pivots_gpu_.get(),
-                    node_variance_gpu_.get(), indices_gpu.get(), dists_gpu.get(),
-                    1, padded_veclen_, num_nodes_, heap_size, loc_size,
-                    this->branching_, this->cb_index_);
-            } else if (knn == 10) {
-                launch_kmeans_search_cooperative<10>(
-                    (const float*)dataset_gpu_.get(), (const float*)queries_gpu.get(),
-                    node_index_gpu_.get(), (const float*)tree_pivots_gpu_.get(),
-                    node_variance_gpu_.get(), indices_gpu.get(), dists_gpu.get(),
-                    1, padded_veclen_, num_nodes_, heap_size, loc_size,
-                    this->branching_, this->cb_index_);
-            } else if (knn == 20) {
-                launch_kmeans_search_cooperative<20>(
-                    (const float*)dataset_gpu_.get(), (const float*)queries_gpu.get(),
-                    node_index_gpu_.get(), (const float*)tree_pivots_gpu_.get(),
-                    node_variance_gpu_.get(), indices_gpu.get(), dists_gpu.get(),
-                    1, padded_veclen_, num_nodes_, heap_size, loc_size,
-                    this->branching_, this->cb_index_);
-            } else if (knn == 50) {
-                launch_kmeans_search_cooperative<50>(
-                    (const float*)dataset_gpu_.get(), (const float*)queries_gpu.get(),
-                    node_index_gpu_.get(), (const float*)tree_pivots_gpu_.get(),
-                    node_variance_gpu_.get(), indices_gpu.get(), dists_gpu.get(),
-                    1, padded_veclen_, num_nodes_, heap_size, loc_size,
-                    this->branching_, this->cb_index_);
-            } else if (knn == 100) {
-                launch_kmeans_search_cooperative<100>(
-                    (const float*)dataset_gpu_.get(), (const float*)queries_gpu.get(),
-                    node_index_gpu_.get(), (const float*)tree_pivots_gpu_.get(),
-                    node_variance_gpu_.get(), indices_gpu.get(), dists_gpu.get(),
-                    1, padded_veclen_, num_nodes_, heap_size, loc_size,
-                    this->branching_, this->cb_index_);
-            }
-            // Note: Unsupported k values will fail in knnSearchGPUImpl with clear error
+            // Dispatch warmup based on k value (triggers JIT for correct template)
+            #define WARMUP_DISPATCH(K) \
+                launch_kmeans_search_cooperative<K>( \
+                    (const float*)dataset_gpu_.get(), (const float*)queries_gpu.get(), \
+                    node_index_gpu_.get(), (const float*)tree_pivots_gpu_.get(), \
+                    node_variance_gpu_.get(), indices_gpu.get(), dists_gpu.get(), \
+                    1, padded_veclen_, num_nodes_, heap_size, loc_size, \
+                    this->branching_, this->cb_index_)
+
+            if (knn == 1) { WARMUP_DISPATCH(1); }
+            else if (knn == 2) { WARMUP_DISPATCH(2); }
+            else if (knn == 4) { WARMUP_DISPATCH(4); }
+            else if (knn == 5) { WARMUP_DISPATCH(5); }
+            else if (knn == 7) { WARMUP_DISPATCH(7); }
+            else if (knn == 8) { WARMUP_DISPATCH(8); }
+            else if (knn == 10) { WARMUP_DISPATCH(10); }
+            else if (knn == 16) { WARMUP_DISPATCH(16); }
+            else if (knn == 20) { WARMUP_DISPATCH(20); }
+            else if (knn == 32) { WARMUP_DISPATCH(32); }
+            else if (knn == 50) { WARMUP_DISPATCH(50); }
+            else if (knn == 64) { WARMUP_DISPATCH(64); }
+            else if (knn == 100) { WARMUP_DISPATCH(100); }
+
+            #undef WARMUP_DISPATCH
         }
 
         // Sync to ensure kernel completes (and JIT finishes)
@@ -687,121 +668,41 @@ protected:
         if (use_cooperative) {
             // Use cooperative kernel (LOC_SIZE threads per query)
             // Dispatch based on k value (template parameter)
-            if (knn == 1) {
-                success = launch_kmeans_search_cooperative<1>(
-                    (const float*)dataset_gpu_.get(),
-                    (const float*)queries_gpu.get(),
-                    node_index_gpu_.get(),
-                    (const float*)tree_pivots_gpu_.get(),
-                    node_variance_gpu_.get(),
-                    indices_gpu.get(),
-                    (float*)dists_gpu.get(),
-                    num_queries,
-                    padded_veclen_,
-                    num_nodes_,
-                    heap_size,
-                    loc_size,
-                    this->branching_,
-                    this->cb_index_
-                );
-            } else if (knn == 5) {
-                success = launch_kmeans_search_cooperative<5>(
-                    (const float*)dataset_gpu_.get(),
-                    (const float*)queries_gpu.get(),
-                    node_index_gpu_.get(),
-                    (const float*)tree_pivots_gpu_.get(),
-                    node_variance_gpu_.get(),
-                    indices_gpu.get(),
-                    (float*)dists_gpu.get(),
-                    num_queries,
-                    padded_veclen_,
-                    num_nodes_,
-                    heap_size,
-                    loc_size,
-                    this->branching_,
-                    this->cb_index_
-                );
-            } else if (knn == 10) {
-                success = launch_kmeans_search_cooperative<10>(
-                    (const float*)dataset_gpu_.get(),
-                    (const float*)queries_gpu.get(),
-                    node_index_gpu_.get(),
-                    (const float*)tree_pivots_gpu_.get(),
-                    node_variance_gpu_.get(),
-                    indices_gpu.get(),
-                    (float*)dists_gpu.get(),
-                    num_queries,
-                    padded_veclen_,
-                    num_nodes_,
-                    heap_size,
-                    loc_size,
-                    this->branching_,
-                    this->cb_index_
-                );
-            } else if (knn == 20) {
-                success = launch_kmeans_search_cooperative<20>(
-                    (const float*)dataset_gpu_.get(),
-                    (const float*)queries_gpu.get(),
-                    node_index_gpu_.get(),
-                    (const float*)tree_pivots_gpu_.get(),
-                    node_variance_gpu_.get(),
-                    indices_gpu.get(),
-                    (float*)dists_gpu.get(),
-                    num_queries,
-                    padded_veclen_,
-                    num_nodes_,
-                    heap_size,
-                    loc_size,
-                    this->branching_,
-                    this->cb_index_
-                );
-            } else if (knn == 50) {
-                success = launch_kmeans_search_cooperative<50>(
-                    (const float*)dataset_gpu_.get(),
-                    (const float*)queries_gpu.get(),
-                    node_index_gpu_.get(),
-                    (const float*)tree_pivots_gpu_.get(),
-                    node_variance_gpu_.get(),
-                    indices_gpu.get(),
-                    (float*)dists_gpu.get(),
-                    num_queries,
-                    padded_veclen_,
-                    num_nodes_,
-                    heap_size,
-                    loc_size,
-                    this->branching_,
-                    this->cb_index_
-                );
-            } else if (knn == 100) {
-                success = launch_kmeans_search_cooperative<100>(
-                    (const float*)dataset_gpu_.get(),
-                    (const float*)queries_gpu.get(),
-                    node_index_gpu_.get(),
-                    (const float*)tree_pivots_gpu_.get(),
-                    node_variance_gpu_.get(),
-                    indices_gpu.get(),
-                    (float*)dists_gpu.get(),
-                    num_queries,
-                    padded_veclen_,
-                    num_nodes_,
-                    heap_size,
-                    loc_size,
-                    this->branching_,
-                    this->cb_index_
-                );
-            } else {
-                // Unsupported k for cooperative kernel
-                use_cooperative = false;
-            }
+            #define SEARCH_DISPATCH(K) \
+                success = launch_kmeans_search_cooperative<K>( \
+                    (const float*)dataset_gpu_.get(), \
+                    (const float*)queries_gpu.get(), \
+                    node_index_gpu_.get(), \
+                    (const float*)tree_pivots_gpu_.get(), \
+                    node_variance_gpu_.get(), \
+                    indices_gpu.get(), \
+                    (float*)dists_gpu.get(), \
+                    num_queries, padded_veclen_, num_nodes_, \
+                    heap_size, loc_size, this->branching_, this->cb_index_)
+
+            if (knn == 1) { SEARCH_DISPATCH(1); }
+            else if (knn == 2) { SEARCH_DISPATCH(2); }
+            else if (knn == 4) { SEARCH_DISPATCH(4); }
+            else if (knn == 5) { SEARCH_DISPATCH(5); }
+            else if (knn == 7) { SEARCH_DISPATCH(7); }
+            else if (knn == 8) { SEARCH_DISPATCH(8); }
+            else if (knn == 10) { SEARCH_DISPATCH(10); }
+            else if (knn == 16) { SEARCH_DISPATCH(16); }
+            else if (knn == 20) { SEARCH_DISPATCH(20); }
+            else if (knn == 32) { SEARCH_DISPATCH(32); }
+            else if (knn == 50) { SEARCH_DISPATCH(50); }
+            else if (knn == 64) { SEARCH_DISPATCH(64); }
+            else if (knn == 100) { SEARCH_DISPATCH(100); }
+            else { use_cooperative = false; }
+
+            #undef SEARCH_DISPATCH
         }
 
         if (!use_cooperative) {
-            // This should not normally be reached - knnSearch() should fall back to CPU
-            // for unsupported k values. If you see this error, it means knnSearchGPU()
-            // was called directly with an unsupported k value.
+            // This should not normally be reached - buildCUDAKnnSearch() validates k values.
             throw FLANNException(
                 "Unsupported k value for CUDA cooperative kernel. "
-                "Supported k values: 1, 5, 10, 20, 50, 100 (with branching=32 or 64). "
+                "Supported k values: 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100 (with branching=32 or 64). "
                 "Use knnSearch() instead of knnSearchGPU() for automatic CPU fallback.");
         }
 

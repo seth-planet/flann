@@ -324,8 +324,8 @@ target_link_libraries(my_app flann_cuda CUDA::cudart)
 Unlike the CPU implementation, CUDA indices **throw exceptions** for unsupported k-values:
 
 ```cpp
-// K-Means CUDA only supports: 1, 5, 10, 20, 50, 100
-index.buildCUDAKnnSearch(7, params);  // THROWS FLANNException!
+// K-Means CUDA supports: 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100
+index.buildCUDAKnnSearch(3, params);  // THROWS FLANNException!
 
 // Hierarchical CUDA supports: 1, 2, 3, 4, 5, 8, 10, 12, 16, 20, 24, 32, 50, 64, 100, 128
 index.buildCUDAKnnSearch(17, params);  // THROWS FLANNException!
@@ -482,7 +482,7 @@ LOC_SIZE controls the number of threads per query in cooperative kernels. Higher
 
 #### K-Means CUDA
 
-**Supported k values:** 1, 5, 10, 20, 50, 100 (6 values only)
+**Supported k values:** 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100 (13 values)
 
 **Requirements:**
 - Branching factor must be 32 or 64

@@ -62,7 +62,16 @@ namespace flann {
 namespace cuda {
 
 // Instantiate for common k values (OpenCL parity: unified nodeIndex array)
+// Supported k values: 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100
 template bool launch_kmeans_search_cooperative<1>(
+    const float*, const float*, const int*, const float*, const float*,
+    int*, float*, size_t, size_t, size_t, int, int, int, float);
+
+template bool launch_kmeans_search_cooperative<2>(
+    const float*, const float*, const int*, const float*, const float*,
+    int*, float*, size_t, size_t, size_t, int, int, int, float);
+
+template bool launch_kmeans_search_cooperative<4>(
     const float*, const float*, const int*, const float*, const float*,
     int*, float*, size_t, size_t, size_t, int, int, int, float);
 
@@ -70,7 +79,19 @@ template bool launch_kmeans_search_cooperative<5>(
     const float*, const float*, const int*, const float*, const float*,
     int*, float*, size_t, size_t, size_t, int, int, int, float);
 
+template bool launch_kmeans_search_cooperative<7>(
+    const float*, const float*, const int*, const float*, const float*,
+    int*, float*, size_t, size_t, size_t, int, int, int, float);
+
+template bool launch_kmeans_search_cooperative<8>(
+    const float*, const float*, const int*, const float*, const float*,
+    int*, float*, size_t, size_t, size_t, int, int, int, float);
+
 template bool launch_kmeans_search_cooperative<10>(
+    const float*, const float*, const int*, const float*, const float*,
+    int*, float*, size_t, size_t, size_t, int, int, int, float);
+
+template bool launch_kmeans_search_cooperative<16>(
     const float*, const float*, const int*, const float*, const float*,
     int*, float*, size_t, size_t, size_t, int, int, int, float);
 
@@ -78,7 +99,15 @@ template bool launch_kmeans_search_cooperative<20>(
     const float*, const float*, const int*, const float*, const float*,
     int*, float*, size_t, size_t, size_t, int, int, int, float);
 
+template bool launch_kmeans_search_cooperative<32>(
+    const float*, const float*, const int*, const float*, const float*,
+    int*, float*, size_t, size_t, size_t, int, int, int, float);
+
 template bool launch_kmeans_search_cooperative<50>(
+    const float*, const float*, const int*, const float*, const float*,
+    int*, float*, size_t, size_t, size_t, int, int, int, float);
+
+template bool launch_kmeans_search_cooperative<64>(
     const float*, const float*, const int*, const float*, const float*,
     int*, float*, size_t, size_t, size_t, int, int, int, float);
 
