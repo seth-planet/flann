@@ -689,11 +689,15 @@ sudo apt-get install nvidia-cuda-toolkit
 ### Implementation Details
 
 **Files:**
-- `src/cpp/flann/algorithms/cuda/kmeans_cuda_index.h` - K-Means CUDA implementation (~739 lines)
+- `src/cpp/flann/algorithms/cuda/kmeans_cuda_index.h` - K-Means CUDA implementation (~1,142 lines)
 - `src/cpp/flann/algorithms/cuda/hierarchical_cuda_index.h` - Hierarchical clustering (~891 lines)
-- `src/cpp/flann/algorithms/cuda/kernels/hierarchical_search_cooperative.cuh` - Cooperative kernel (~629 lines)
-- `src/cpp/flann/algorithms/cuda/kernels/kmeans_search_kernel.cuh` - K-Means kernel (~530 lines)
-- `src/cpp/flann/algorithms/cuda/cuda_utils.h` - CUDA infrastructure (~364 lines)
+- `src/cpp/flann/algorithms/cuda/cuda_utils.h` - CUDA infrastructure (~335 lines)
+- `src/cpp/flann/algorithms/cuda/kernels/kmeans_search_cooperative.cuh` - K-Means cooperative kernel (~927 lines)
+- `src/cpp/flann/algorithms/cuda/kernels/hierarchical_search_cooperative.cuh` - Hierarchical cooperative kernel (~696 lines)
+- `src/cpp/flann/algorithms/cuda/kernels/hierarchical_search_kernel.cuh` - Hierarchical single-threaded kernel (~645 lines)
+- `src/cpp/flann/algorithms/cuda/kernels/heap_utils.cuh` - Heap utilities (~454 lines)
+- `src/cpp/flann/algorithms/cuda/kernels/distance_kernels.cuh` - Distance computation kernels (~360 lines)
+- `src/cpp/flann/algorithms/cuda/kernels/bitonic_sort.cuh` - Bitonic sort for GPU (~114 lines)
 
 **Design:**
 - Dual inheritance pattern (CPU tree building + GPU search)
@@ -711,7 +715,7 @@ sudo apt-get install nvidia-cuda-toolkit
 
 ### Comparison: CUDA vs OpenCL
 
-**Comprehensive comparison performed November 2024** (stage-by-stage nsys profiling + multi-run benchmarks)
+**Comprehensive comparison performed December 2025** (stage-by-stage nsys profiling + multi-run benchmarks)
 
 | Feature | CUDA | OpenCL | Analysis |
 |---------|------|--------|----------|
@@ -721,11 +725,11 @@ sudo apt-get install nvidia-cuda-toolkit
 | **Test Coverage** | 16/19 tests (3 need branching=7) | 19/19 tests ✅ | OpenCL more complete |
 | **Memory Leaks** | 0 (verified) | 0 (verified) | Both clean |
 | **Build Time** | Compile-time | Runtime kernel compilation | CUDA faster startup |
-| **K-Means k-values** | 6 values (1,5,10,20,50,100) | Any k | OpenCL more flexible |
+| **K-Means k-values** | 13 values (1,2,4,5,7,8,10,16,20,32,50,64,100) | Any k | OpenCL more flexible |
 | **Hierarchical k-values** | 16 values | Any k | OpenCL more flexible |
 | **Maturity** | Production (2024-2025) | Experimental (2017-2018, modernized 2024) | CUDA more recent |
 
-**Benchmark Results (November 2024):**
+**Benchmark Results (December 2025):**
 
 **K-Means CUDA (SIFT100K, 1K queries, k=5):**
 | Metric | Value |

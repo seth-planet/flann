@@ -233,9 +233,11 @@ public:
         std::swap(num_nodes_, other.num_nodes_);
         std::swap(padded_veclen_, other.padded_veclen_);
 
-        // Swap GPU buffers (move semantics)
-        tree_pivots_gpu_ = std::move(other.tree_pivots_gpu_);
-        dataset_gpu_ = std::move(other.dataset_gpu_);
+        // Swap all GPU buffers
+        std::swap(tree_pivots_gpu_, other.tree_pivots_gpu_);
+        std::swap(dataset_gpu_, other.dataset_gpu_);
+        std::swap(node_index_gpu_, other.node_index_gpu_);
+        std::swap(node_variance_gpu_, other.node_variance_gpu_);
     }
 
     /**
@@ -487,7 +489,9 @@ public:
         if (this->branching_ != 32 && this->branching_ != 64) {
             return false;
         }
-        return (knn == 1 || knn == 5 || knn == 10 || knn == 20 || knn == 50 || knn == 100);
+        // K-Means CUDA supports: 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100
+        return (knn == 1 || knn == 2 || knn == 4 || knn == 5 || knn == 7 || knn == 8 ||
+                knn == 10 || knn == 16 || knn == 20 || knn == 32 || knn == 50 || knn == 64 || knn == 100);
     }
 
     /**
@@ -517,7 +521,7 @@ public:
             // GPU is ready - require supported k value
             if (!isKValueSupportedForGPU(knn)) {
                 throw FLANNException("Unsupported k=" + std::to_string(knn) +
-                    " for K-Means CUDA. Supported k values: 1, 5, 10, 20, 50, 100. "
+                    " for K-Means CUDA. Supported k values: 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100. "
                     "Use CPU KMeansIndex for other k values.");
             }
             return knnSearchGPU(queries, indices, dists, knn, params);
@@ -549,7 +553,7 @@ public:
             // GPU is ready - require supported k value
             if (!isKValueSupportedForGPU(knn)) {
                 throw FLANNException("Unsupported k=" + std::to_string(knn) +
-                    " for K-Means CUDA. Supported k values: 1, 5, 10, 20, 50, 100. "
+                    " for K-Means CUDA. Supported k values: 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100. "
                     "Use CPU KMeansIndex for other k values.");
             }
             return knnSearchGPU(queries, indices, dists, (int)knn, params);

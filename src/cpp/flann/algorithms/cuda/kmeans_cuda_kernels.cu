@@ -32,8 +32,8 @@
  * @brief CUDA kernel compilation unit for K-Means search
  *
  * This file serves as the CUDA compilation unit that compiles the
- * K-Means search kernels. The actual kernel implementations are in
- * kmeans_search_kernel.cuh, which is included here and compiled by nvcc.
+ * K-Means cooperative search kernel. The kernel implementation is in
+ * kmeans_search_cooperative.cuh, included here and compiled by nvcc.
  *
  * This pattern separates:
  * - .cuh files: Device code (kernels) - included in both CPU and GPU compilation
@@ -43,18 +43,8 @@
 
 // Note: FLANN_USE_CUDA is defined via CMake target_compile_definitions
 
-// Include the kernel implementations
-#include "kernels/kmeans_search_kernel.cuh"
+// Include the cooperative kernel implementation (production kernel)
 #include "kernels/kmeans_search_cooperative.cuh"
-
-// This .cu file exists purely to trigger CUDA compilation of the kernels.
-//
-// NOTE: kmeans_search_kernel.cuh contains a single-threaded kernel (launch_kmeans_search)
-// that is NOT CURRENTLY USED. All production code uses launch_kmeans_search_cooperative.
-// The single-threaded kernel is preserved for potential future use with branching factors
-// other than 32/64 (e.g., branching=7), which the cooperative kernel doesn't support.
-// TODO: Either wire up the single-threaded kernel as fallback for non-32/64 branching,
-//       or remove kmeans_search_kernel.cuh to reduce code footprint.
 
 // Explicit template instantiations for cooperative kernel launcher
 // Required because the launcher is called from host code via template dispatch

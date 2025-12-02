@@ -28,6 +28,10 @@
  *************************************************************************/
 
 // Note: FLANN_USE_CUDA is defined via CMake target_compile_definitions
+#ifndef FLANN_USE_CUDA
+#error "CUDA tests require FLANN_USE_CUDA to be defined. Build with -DBUILD_CUDA_LIB=ON"
+#endif
+
 #include <gtest/gtest.h>
 #include <time.h>
 

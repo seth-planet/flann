@@ -28,6 +28,10 @@
  *************************************************************************/
 
 // Note: FLANN_USE_CUDA is defined via CMake target_compile_definitions
+#ifndef FLANN_USE_CUDA
+#error "CUDA tests require FLANN_USE_CUDA to be defined. Build with -DBUILD_CUDA_LIB=ON"
+#endif
+
 #include <gtest/gtest.h>
 #include <time.h>
 
@@ -271,6 +275,62 @@ TEST_F(KMeansCUDA_SIFT10K, TestValidKValueSucceeds)
     // k=5 is supported
     EXPECT_NO_THROW(index.buildCUDAKnnSearch(5, flann::SearchParams(128)));
     EXPECT_TRUE(index.isGPUSearchReady());
+}
+
+/**
+ * Test: Boundary k-values (k=1 minimum, k=100 maximum)
+ * Verify that k=1 and k=100 produce correct results
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestBoundaryKValues)
+{
+    flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+
+    // Test k=1 (minimum)
+    {
+        flann::Matrix<size_t> indices_k1(new size_t[query.rows], query.rows, 1);
+        flann::Matrix<float> dists_k1(new float[query.rows], query.rows, 1);
+
+        EXPECT_NO_THROW(index.buildCUDAKnnSearch(1, flann::SearchParams(128)));
+        EXPECT_TRUE(index.isGPUSearchReady());
+        index.knnSearch(query, indices_k1, dists_k1, 1, flann::SearchParams(128));
+
+        // Verify k=1 returns exactly one neighbor per query
+        for (size_t i = 0; i < query.rows; ++i) {
+            EXPECT_GE(indices_k1[i][0], 0u);
+            EXPECT_LT(indices_k1[i][0], data.rows);
+            EXPECT_GE(dists_k1[i][0], 0.0f);
+        }
+
+        delete[] indices_k1.ptr();
+        delete[] dists_k1.ptr();
+    }
+
+    // Test k=100 (maximum supported)
+    {
+        flann::Matrix<size_t> indices_k100(new size_t[query.rows * 100], query.rows, 100);
+        flann::Matrix<float> dists_k100(new float[query.rows * 100], query.rows, 100);
+
+        EXPECT_NO_THROW(index.buildCUDAKnnSearch(100, flann::SearchParams(256)));
+        EXPECT_TRUE(index.isGPUSearchReady());
+        index.knnSearch(query, indices_k100, dists_k100, 100, flann::SearchParams(256));
+
+        // Verify k=100 returns valid neighbors with increasing distances
+        for (size_t i = 0; i < query.rows; ++i) {
+            for (size_t j = 0; j < 100; ++j) {
+                EXPECT_GE(indices_k100[i][j], 0u);
+                EXPECT_LT(indices_k100[i][j], data.rows);
+            }
+            // Distances should be non-decreasing (sorted)
+            for (size_t j = 1; j < 100; ++j) {
+                EXPECT_GE(dists_k100[i][j], dists_k100[i][j-1])
+                    << "Distances not sorted at query " << i << ", position " << j;
+            }
+        }
+
+        delete[] indices_k100.ptr();
+        delete[] dists_k100.ptr();
+    }
 }
 
 int main(int argc, char** argv)
