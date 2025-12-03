@@ -407,46 +407,6 @@ __device__ inline bool insert_into_heap_int(
     return false;
 }
 
-/**
- * @brief Sort k-NN result heap in ascending order by distance
- *
- * Converts max-heap to sorted array using heap-sort algorithm.
- * After sorting, result[0] has smallest distance, result[K-1] has largest.
- *
- * **CRITICAL:** This matches OpenCL behavior (nn_opencl_index.h line 971: sortHeap()).
- * Max-heap property does NOT guarantee sorted order - elements can be in arbitrary order.
- * Example: [45, 43, 45] is a valid max-heap but NOT sorted.
- *
- * @tparam K Number of nearest neighbors
- * @param dists Distance array (max-heap → sorted array in ascending order)
- * @param indices Index array (parallel to dists)
- */
-template<int K>
-__device__ inline void sort_result_heap_int(
-    int* dists,
-    int* indices
-) {
-    // Heap-sort: repeatedly extract max (root) and rebuild heap
-    // After loop: array is sorted in ascending order
-    int heap_size = K;
-
-    #pragma unroll
-    for (int i = K - 1; i > 0; --i) {
-        // Swap root (max) with last element
-        int tmp_dist = dists[0];
-        int tmp_idx = indices[0];
-        dists[0] = dists[i];
-        indices[0] = indices[i];
-        dists[i] = tmp_dist;
-        indices[i] = tmp_idx;
-
-        // Reduce heap size and restore heap property
-        heap_size--;
-        sift_down_max_heap_int(dists, indices, heap_size, 0);
-    }
-    // Now dists[0..K-1] is sorted in ascending order
-}
-
 } // namespace cuda
 } // namespace flann
 

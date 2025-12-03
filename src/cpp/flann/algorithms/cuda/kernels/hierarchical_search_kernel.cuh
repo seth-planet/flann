@@ -241,8 +241,6 @@ __device__ inline int explore_node_branches_hamming(
  * @param bytes Descriptor length in bytes
  * @param max_checks Maximum distance computations allowed
  * @param max_pq_size Maximum priority queue size
- * @param checked_indices Array tracking visited dataset indices (duplicate detection)
- * @param num_checked Count of checked indices
  * @return Index of next node to explore (-1 if leaf)
  */
 template<int K>
@@ -263,9 +261,7 @@ __device__ inline int find_nearest_neighbor_hamming(
     int padded_bytes,
     int actual_bytes,
     int max_checks,
-    int max_pq_size,
-    int* __restrict__ checked_indices,
-    int& num_checked
+    int max_pq_size
 ) {
     const KMeansNodeGPU& node = tree_nodes[node_index];
 
@@ -413,12 +409,6 @@ __global__ void hierarchical_search_kernel(
     int pq_nodes[MAX_PQ_SIZE];
     int pq_size = 0;
 
-    // Per-thread duplicate detection array
-    // NOTE: OpenCL doesn't use this - it only checks duplicates in the results array
-    // Keeping for now but will change duplicate detection logic to match OpenCL
-    int checked_indices[MAX_CHECKS];
-    int num_checked = 0;
-
     int checks = 0;  // OpenCL initializes to 0 (incremented after each point examined)
     int current_tree = 1;  // Start at 1 (tree 0 explored before loop, like OpenCL)
 
@@ -440,8 +430,7 @@ __global__ void hierarchical_search_kernel(
             next_node, query,
             result_dists, result_ids,
             pq_dists, pq_nodes, pq_size,
-            checks, padded_bytes, actual_bytes, MAX_CHECKS, MAX_PQ_SIZE,
-            checked_indices, num_checked
+            checks, padded_bytes, actual_bytes, MAX_CHECKS, MAX_PQ_SIZE
         );
 
         // If current branch exhausted
@@ -470,173 +459,9 @@ __global__ void hierarchical_search_kernel(
     }
 }
 
-/**
- * @brief Kernel launcher (dispatches to template instantiations)
- *
- * This function provides runtime dispatch to compile-time template parameters.
- * Different k and max_checks values require different kernel instantiations
- * for optimal performance.
- *
- * @param dataset Dataset descriptors (GPU)
- * @param queries Query descriptors (GPU)
- * @param tree_nodes Tree structure (GPU)
- * @param tree_pivots Pivot descriptors (GPU)
- * @param dataset_indices Leaf indices (GPU)
- * @param result_indices Output indices (GPU)
- * @param result_distances Output distances (GPU)
- * @param num_queries Number of queries
- * @param bytes Descriptor length in bytes
- * @param num_nodes Number of tree nodes
- * @param k Number of nearest neighbors
- * @param max_checks Max distance computations
- * @param grid CUDA grid dimensions
- * @param block CUDA block dimensions
- * @return true if kernel launched successfully, false if unsupported k
- */
-bool launch_hierarchical_search(
-    const unsigned char* dataset,
-    const unsigned char* queries,
-    const KMeansNodeGPU* tree_nodes,
-    const unsigned char* tree_pivots,
-    const int* dataset_indices,
-    const int* device_node_index,  // CRITICAL FIX: nodeIndex indirection array
-    int* result_indices,
-    int* result_distances,
-    size_t num_queries,
-    size_t padded_bytes,
-    size_t actual_bytes,
-    size_t num_nodes,
-    int k,
-    int max_checks,
-    int num_trees,
-    int branching,
-    dim3 grid,
-    dim3 block
-) {
-    // Dispatch based on k and max_checks
-    // Common configurations: k ∈ {1, 5, 10, 20, 50, 100}, max_checks ∈ {32, 64, 128, 256}
-
-    if (k == 1) {
-        if (max_checks <= 32) {
-            hierarchical_search_kernel<1, 32><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else if (max_checks <= 64) {
-            hierarchical_search_kernel<1, 64><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else if (max_checks <= 128) {
-            hierarchical_search_kernel<1, 128><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else {
-            hierarchical_search_kernel<1, 256><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        }
-    } else if (k == 3) {
-        if (max_checks <= 32) {
-            hierarchical_search_kernel<3, 32><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else if (max_checks <= 64) {
-            hierarchical_search_kernel<3, 64><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else if (max_checks <= 128) {
-            hierarchical_search_kernel<3, 128><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else if (max_checks <= 256) {
-            hierarchical_search_kernel<3, 256><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else if (max_checks <= 512) {
-            hierarchical_search_kernel<3, 512><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else if (max_checks <= 1024) {
-            hierarchical_search_kernel<3, 1024><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else {
-            hierarchical_search_kernel<3, 2048><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        }
-    } else if (k == 5) {
-        if (max_checks <= 32) {
-            hierarchical_search_kernel<5, 32><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else if (max_checks <= 64) {
-            hierarchical_search_kernel<5, 64><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else if (max_checks <= 128) {
-            hierarchical_search_kernel<5, 128><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else {
-            hierarchical_search_kernel<5, 256><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        }
-    } else if (k == 10) {
-        if (max_checks <= 32) {
-            hierarchical_search_kernel<10, 32><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else if (max_checks <= 64) {
-            hierarchical_search_kernel<10, 64><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else if (max_checks <= 128) {
-            hierarchical_search_kernel<10, 128><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else {
-            hierarchical_search_kernel<10, 256><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        }
-    } else if (k == 20) {
-        if (max_checks <= 128) {
-            hierarchical_search_kernel<20, 128><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        } else {
-            hierarchical_search_kernel<20, 256><<<grid, block>>>(
-                dataset, queries, tree_nodes, tree_pivots, dataset_indices, device_node_index,
-                result_indices, result_distances,
-                num_queries, padded_bytes, actual_bytes, num_nodes, num_trees, branching);
-        }
-    } else {
-        return false;  // Unsupported k value
-    }
-
-    return true;
-}
+// Note: launch_hierarchical_search() removed - only cooperative version is used.
+// The hierarchical_search_kernel<K,MAX_CHECKS> template above is preserved for
+// potential future use or reference, but is not instantiated in production code.
 
 } // namespace cuda
 } // namespace flann

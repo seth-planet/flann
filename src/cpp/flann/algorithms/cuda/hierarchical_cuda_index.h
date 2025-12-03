@@ -55,26 +55,6 @@ namespace cuda {
 #include "flann/algorithms/cuda/kernels/hierarchical_search_cooperative.cuh"
 #else
 // Forward declare kernel launch functions for non-CUDA compilation
-bool launch_hierarchical_search(
-    const unsigned char* dataset,
-    const unsigned char* queries,
-    const KMeansNodeGPU* tree_nodes,
-    const unsigned char* tree_pivots,
-    const int* dataset_indices,
-    const int* device_node_index,  // CRITICAL FIX: nodeIndex indirection array
-    int* result_indices,
-    int* result_distances,
-    size_t num_queries,
-    size_t padded_bytes,
-    size_t actual_bytes,
-    size_t num_nodes,
-    int knn,
-    int max_checks,
-    int num_trees,
-    int branching,
-    dim3 grid,
-    dim3 block);
-
 bool launch_hierarchical_search_cooperative(
     const unsigned char* dataset,
     const unsigned char* queries,
@@ -168,7 +148,6 @@ public:
           gpu_nodes_(),
           gpu_pivots_(),
           gpu_dataset_(),
-          gpu_dataset_indices_(),
           gpu_node_index_()          // CRITICAL FIX: Initialize nodeIndex buffer
     {
     }
@@ -191,7 +170,6 @@ public:
           gpu_nodes_(),
           gpu_pivots_(),
           gpu_dataset_(),
-          gpu_dataset_indices_(),
           gpu_node_index_()          // CRITICAL FIX: Initialize nodeIndex buffer
     {
     }
@@ -212,7 +190,6 @@ public:
           gpu_nodes_(),              // Explicit default construction
           gpu_pivots_(),             // Prevents copy attempt (copy ctor deleted)
           gpu_dataset_(),            // CUDABuffer starts empty (ptr_ = nullptr)
-          gpu_dataset_indices_(),    // User must call buildCUDAKnnSearch()
           gpu_node_index_()          // CRITICAL FIX: Initialize nodeIndex buffer
     {
         // GPU buffers start empty - user must call buildCUDAKnnSearch()
@@ -233,7 +210,6 @@ public:
           gpu_nodes_(),              // Explicit default construction
           gpu_pivots_(),             // Prevents copy attempt (copy ctor deleted)
           gpu_dataset_(),            // CUDABuffer starts empty (ptr_ = nullptr)
-          gpu_dataset_indices_(),    // User must call buildCUDAKnnSearch()
           gpu_node_index_()          // CRITICAL FIX: Initialize nodeIndex buffer
     {
         // GPU buffers start empty - user must call buildCUDAKnnSearch()
@@ -404,7 +380,6 @@ public:
         std::swap(gpu_nodes_, other.gpu_nodes_);
         std::swap(gpu_pivots_, other.gpu_pivots_);
         std::swap(gpu_dataset_, other.gpu_dataset_);
-        std::swap(gpu_dataset_indices_, other.gpu_dataset_indices_);
         std::swap(gpu_node_index_, other.gpu_node_index_);
     }
 
@@ -500,7 +475,6 @@ protected:
         gpu_nodes_ = CUDABuffer<KMeansNodeGPU>();
         gpu_pivots_ = CUDABuffer<ElementType>();
         gpu_dataset_ = CUDABuffer<ElementType>();
-        gpu_dataset_indices_ = CUDABuffer<int>();
         gpu_node_index_ = CUDABuffer<int>();
 
         gpu_initialized_ = false;
@@ -698,13 +672,11 @@ protected:
         gpu_nodes_.resize(num_nodes);
         gpu_pivots_.resize(num_nodes * padded_veclen);
         gpu_dataset_.resize(this->size_ * padded_veclen);
-        gpu_dataset_indices_.resize(dataset_indices.size());
         gpu_node_index_.resize(hybrid_size);  // CRITICAL: Hybrid array with embedded leaf data
 
         gpu_nodes_.upload(nodes_host.data(), num_nodes);
         gpu_pivots_.upload(pivots_host.data(), num_nodes * padded_veclen);
         gpu_dataset_.upload(dataset_host.data(), this->size_ * padded_veclen);
-        gpu_dataset_indices_.upload(dataset_indices.data(), dataset_indices.size());
         gpu_node_index_.upload(hybrid_node_index.data(), hybrid_size);  // CRITICAL: Upload hybrid array
 
         gpu_initialized_ = true;
@@ -879,7 +851,6 @@ private:
     mutable CUDABuffer<KMeansNodeGPU> gpu_nodes_;      ///< Flattened node array
     mutable CUDABuffer<ElementType> gpu_pivots_;       ///< Pivot descriptors (padded)
     mutable CUDABuffer<ElementType> gpu_dataset_;      ///< Dataset descriptors (padded)
-    mutable CUDABuffer<int> gpu_dataset_indices_;      ///< Leaf node dataset indices
     mutable CUDABuffer<int> gpu_node_index_;           ///< Indirection array matching OpenCL (pointers not indices)
 
 };
