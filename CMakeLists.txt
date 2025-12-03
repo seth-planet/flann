@@ -1,10 +1,16 @@
-cmake_minimum_required(VERSION 3.5...3.28)
+cmake_minimum_required(VERSION 3.20)
 
 if(COMMAND cmake_policy)
     cmake_policy(SET CMP0003 NEW)
 endif(COMMAND cmake_policy)
 
-project(flann)
+# Detect if being built as a subproject (FetchContent, add_subdirectory)
+get_directory_property(FLANN_IS_SUBPROJECT PARENT_DIRECTORY)
+if(FLANN_IS_SUBPROJECT)
+    message(STATUS "Building FLANN as a subproject")
+endif()
+
+project(flann VERSION 1.9.2 LANGUAGES C CXX)
 string(TOLOWER ${PROJECT_NAME} PROJECT_NAME_LOWER)
 
 # Set C++14 standard for modern features
@@ -14,7 +20,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 message(STATUS "Using C++14 standard")
 
 include(${PROJECT_SOURCE_DIR}/cmake/flann_utils.cmake)
-set(FLANN_VERSION 1.9.2)
+set(FLANN_VERSION ${PROJECT_VERSION})
 DISSECT_VERSION()
 GET_OS_INFO()
 ENABLE_TESTING()
@@ -88,8 +94,6 @@ endif()
 find_hdf5()
 if (NOT HDF5_FOUND)
 	message(WARNING "hdf5 library not found, some tests will not be run")
-else()
-    include_directories(${HDF5_INCLUDE_DIR})
 endif()
 
 if (USE_MPI OR HDF5_IS_PARALLEL)
@@ -99,8 +103,6 @@ if (HDF5_IS_PARALLEL)
     if (NOT MPI_FOUND)
         message(WARNING "Found the parallel HDF5 library, but could not find the MPI library. Define the MPI_COMPILER variable to the path of your MPI compiler.")
     endif()
-    # Parallel HDF5 needs to find the "mpi.h" header file
-    include_directories(${MPI_INCLUDE_PATH})
 endif()
 
 
@@ -119,7 +121,6 @@ endif(USE_MPI)
 
 if (USE_MPI AND HDF5_IS_PARALLEL)
     find_package(Boost COMPONENTS mpi system serialization thread REQUIRED)
-    include_directories(${Boost_INCLUDE_DIRS})
     add_definitions("-DHAVE_MPI")
 endif()
 
@@ -149,7 +150,6 @@ if (BUILD_OpenCL_LIB)
     find_package(OpenCL)
     if (OpenCL_FOUND)
         message(STATUS "OpenCL found (include: ${OpenCL_INCLUDE_DIRS}, lib: ${OpenCL_LIBRARIES})")
-        include_directories(${OpenCL_INCLUDE_DIRS})
     else(OpenCL_FOUND)
         message(STATUS "OpenCL not found, OpenCL library will not be built")
         set(BUILD_OpenCL_LIB OFF)
@@ -247,22 +247,15 @@ if (BUILD_CUDA_LIB)
     endif()
 endif(BUILD_CUDA_LIB)
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LZ4 REQUIRED liblz4)
-include_directories(${LZ4_INCLUDE_DIRS})
-
-#set the C/C++ include path to the "include" directory
-include_directories(BEFORE ${PROJECT_SOURCE_DIR}/src/cpp)
-
-# require proper c++
-#add_definitions( "-Wall -ansi -pedantic" )
-# HDF5 uses long long which is not ansi
-if(CMAKE_C_COMPILER_ID MATCHES "MSVC" OR CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-    # lots of warnings with cl.exe right now, use /W1
-    add_definitions("/W1 -D_CRT_SECURE_NO_WARNINGS -D_SCL_SECURE_NO_WARNINGS /bigobj")
+# PkgConfig is required for standalone builds, optional for subprojects
+if(NOT FLANN_IS_SUBPROJECT)
+    find_package(PkgConfig REQUIRED)
 else()
-    add_definitions( "-Wall -Wno-unknown-pragmas -Wno-unused-function" )
+    find_package(PkgConfig QUIET)
 endif()
+pkg_check_modules(LZ4 REQUIRED liblz4)
+
+# Compiler warning flags are now set per-target in src/cpp/CMakeLists.txt
 
 # install and export variables
 set(config_install_dir "lib/cmake/${PROJECT_NAME}")
@@ -274,15 +267,17 @@ set(namespace "flann::")
 
 add_subdirectory( cmake )
 add_subdirectory( src )
-if (BUILD_EXAMPLES)
+
+# Skip examples/tests/docs when built as a subproject
+if (BUILD_EXAMPLES AND NOT FLANN_IS_SUBPROJECT)
   add_subdirectory( examples )
-endif(BUILD_EXAMPLES)
-if (BUILD_TESTS)
+endif()
+if (BUILD_TESTS AND NOT FLANN_IS_SUBPROJECT)
   add_subdirectory( test )
-endif (BUILD_TESTS)
-if (BUILD_DOC)
+endif()
+if (BUILD_DOC AND NOT FLANN_IS_SUBPROJECT)
   add_subdirectory( doc )
-endif (BUILD_DOC)
+endif()
 
 # CMake configuration file creation
 # Include module with fuction 'write_basic_package_version_file'

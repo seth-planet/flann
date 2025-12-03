@@ -1,4 +1,6 @@
-#include_directories(${CMAKE_SOURCE_DIR}/include algorithms ext util nn .)
+# Per-target compiler warning flags (moved from root CMakeLists.txt)
+set(FLANN_COMPILE_OPTIONS_GCC -Wall -Wno-unknown-pragmas -Wno-unused-function)
+set(FLANN_COMPILE_OPTIONS_MSVC /W1 -D_CRT_SECURE_NO_WARNINGS -D_SCL_SECURE_NO_WARNINGS /bigobj)
 
 add_definitions(-D_FLANN_VERSION=${FLANN_VERSION})
 
@@ -10,6 +12,18 @@ file(GLOB_RECURSE CU_SOURCES *.cu)
 
 add_library(flann_cpp_s STATIC ${CPP_SOURCES})
 target_link_libraries(flann_cpp_s PUBLIC ${LZ4_LINK_LIBRARIES})
+target_include_directories(flann_cpp_s
+    PUBLIC
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/cpp>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${LZ4_INCLUDE_DIRS}
+)
+target_compile_options(flann_cpp_s PRIVATE
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:${FLANN_COMPILE_OPTIONS_GCC}>
+    $<$<CXX_COMPILER_ID:MSVC>:${FLANN_COMPILE_OPTIONS_MSVC}>
+)
+target_compile_features(flann_cpp_s PUBLIC cxx_std_14)
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_CLANG)
     set_target_properties(flann_cpp_s PROPERTIES COMPILE_FLAGS -fPIC)
 endif()
@@ -21,8 +35,24 @@ endif()
 
 add_library(flann_cpp SHARED ${CPP_SOURCES})
 target_link_libraries(flann_cpp PUBLIC ${LZ4_LINK_LIBRARIES})
+target_include_directories(flann_cpp
+    PUBLIC
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/cpp>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${LZ4_INCLUDE_DIRS}
+)
+target_compile_options(flann_cpp PRIVATE
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:${FLANN_COMPILE_OPTIONS_GCC}>
+    $<$<CXX_COMPILER_ID:MSVC>:${FLANN_COMPILE_OPTIONS_MSVC}>
+)
+target_compile_features(flann_cpp PUBLIC cxx_std_14)
 # export lz4 headers, so that MSVC to creates flann_cpp.lib
 set_target_properties(flann_cpp PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS YES)
+
+# Alias targets for modern CMake usage (FetchContent, add_subdirectory)
+add_library(flann::flann_cpp ALIAS flann_cpp)
+add_library(flann::flann_cpp_s ALIAS flann_cpp_s)
 
 set(flann_install_targets flann_cpp)
 
@@ -41,6 +71,22 @@ if (BUILD_CUDA_LIB)
     target_link_libraries(flann_cuda_s PUBLIC CUDA::cudart)
     target_link_libraries(flann_cuda PUBLIC CUDA::cudart)
 
+    # Target-specific include directories for CUDA libraries
+    target_include_directories(flann_cuda_s
+        PUBLIC
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/cpp>
+            $<INSTALL_INTERFACE:include>
+        PRIVATE
+            ${LZ4_INCLUDE_DIRS}
+    )
+    target_include_directories(flann_cuda
+        PUBLIC
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/cpp>
+            $<INSTALL_INTERFACE:include>
+        PRIVATE
+            ${LZ4_INCLUDE_DIRS}
+    )
+
     # Set compile definitions
     # CUDA library targets need FLANN_USE_CUDA for enum definitions in defines.h
     set_property(TARGET flann_cuda_s PROPERTY COMPILE_DEFINITIONS FLANN_STATIC FLANN_USE_CUDA)
@@ -51,6 +97,14 @@ if (BUILD_CUDA_LIB)
     # Add CUDA include directories for C++ library targets
     target_include_directories(flann_cpp PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
     target_include_directories(flann_cpp_s PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+
+    # Link CUDA library for CUDA index implementations
+    target_link_libraries(flann_cpp PRIVATE flann_cuda)
+    target_link_libraries(flann_cpp_s PRIVATE flann_cuda_s)
+
+    # Alias targets for modern CMake usage
+    add_library(flann::flann_cuda ALIAS flann_cuda)
+    add_library(flann::flann_cuda_s ALIAS flann_cuda_s)
 
     # Install targets
     if (CMAKE_BUILD_STATIC_LIBS)
@@ -93,6 +147,17 @@ endif()
 if (BUILD_C_BINDINGS)
     add_library(flann_s STATIC ${C_SOURCES})
     target_link_libraries(flann_s PUBLIC ${LZ4_LINK_LIBRARIES})
+    target_include_directories(flann_s
+        PUBLIC
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/cpp>
+            $<INSTALL_INTERFACE:include>
+        PRIVATE
+            ${LZ4_INCLUDE_DIRS}
+    )
+    target_compile_options(flann_s PRIVATE
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:${FLANN_COMPILE_OPTIONS_GCC}>
+        $<$<CXX_COMPILER_ID:MSVC>:${FLANN_COMPILE_OPTIONS_MSVC}>
+    )
     if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_CLANG)
         set_target_properties(flann_s PROPERTIES COMPILE_FLAGS -fPIC)
     endif()
@@ -105,7 +170,22 @@ if (BUILD_C_BINDINGS)
 
     add_library(flann SHARED ${C_SOURCES})
     target_link_libraries(flann PUBLIC ${LZ4_LINK_LIBRARIES})
+    target_include_directories(flann
+        PUBLIC
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/cpp>
+            $<INSTALL_INTERFACE:include>
+        PRIVATE
+            ${LZ4_INCLUDE_DIRS}
+    )
+    target_compile_options(flann PRIVATE
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:${FLANN_COMPILE_OPTIONS_GCC}>
+        $<$<CXX_COMPILER_ID:MSVC>:${FLANN_COMPILE_OPTIONS_MSVC}>
+    )
     list(APPEND flann_install_targets flann)
+
+    # Alias targets for modern CMake usage
+    add_library(flann::flann ALIAS flann)
+    add_library(flann::flann_s ALIAS flann_s)
 
     if(MINGW AND OPENMP_FOUND)
         target_link_libraries(flann PUBLIC gomp)
@@ -118,23 +198,24 @@ if (BUILD_C_BINDINGS)
     )
 endif()
 
-if (BUILD_CUDA_LIB)
-    set_property(TARGET flann PROPERTY COMPILE_DEFINITIONS FLANN_USE_CUDA)
-    set_property(TARGET flann_s PROPERTY COMPILE_DEFINITIONS FLANN_STATIC FLANN_USE_CUDA)
-    # Add CUDA include directories for C library targets
-    target_include_directories(flann PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
-    target_include_directories(flann_s PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
-endif()
+# Note: C bindings do NOT use CUDA - they don't expose CUDA-specific APIs
+# So we don't set FLANN_USE_CUDA or link against flann_cuda for C bindings
 
 if (BUILD_OpenCL_LIB)
     set_property(TARGET flann_cpp PROPERTY COMPILE_DEFINITIONS FLANN_USE_OPENCL)
     set_property(TARGET flann_cpp_s PROPERTY COMPILE_DEFINITIONS FLANN_USE_OPENCL)
     set_property(TARGET flann PROPERTY COMPILE_DEFINITIONS FLANN_USE_OPENCL)
     set_property(TARGET flann_s PROPERTY COMPILE_DEFINITIONS FLANN_USE_OPENCL)
-    target_link_libraries(flann_cpp PUBLIC ${OpenCL_LIBRARIES})
-    target_link_libraries(flann_cpp_s PUBLIC ${OpenCL_LIBRARIES})
-    target_link_libraries(flann PUBLIC ${OpenCL_LIBRARIES})
-    target_link_libraries(flann_s PUBLIC ${OpenCL_LIBRARIES})
+    # OpenCL is an implementation detail, link as PRIVATE (not PUBLIC)
+    target_link_libraries(flann_cpp PRIVATE ${OpenCL_LIBRARIES})
+    target_link_libraries(flann_cpp_s PRIVATE ${OpenCL_LIBRARIES})
+    target_link_libraries(flann PRIVATE ${OpenCL_LIBRARIES})
+    target_link_libraries(flann_s PRIVATE ${OpenCL_LIBRARIES})
+    # Add OpenCL include directories
+    target_include_directories(flann_cpp PRIVATE ${OpenCL_INCLUDE_DIRS})
+    target_include_directories(flann_cpp_s PRIVATE ${OpenCL_INCLUDE_DIRS})
+    target_include_directories(flann PRIVATE ${OpenCL_INCLUDE_DIRS})
+    target_include_directories(flann_s PRIVATE ${OpenCL_INCLUDE_DIRS})
 endif()
 
 if(WIN32)

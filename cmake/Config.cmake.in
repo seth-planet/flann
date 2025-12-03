@@ -1,5 +1,43 @@
 @PACKAGE_INIT@
 
 include("${CMAKE_CURRENT_LIST_DIR}/@targets_export_name@.cmake")
-check_required_components("flann")
 
+# Component availability detection
+# These are set based on what targets were actually exported
+set(flann_cpp_FOUND TRUE)
+if(TARGET flann::flann_cuda)
+    set(flann_cuda_FOUND TRUE)
+else()
+    set(flann_cuda_FOUND FALSE)
+endif()
+if(TARGET flann::flann)
+    set(flann_c_FOUND TRUE)
+else()
+    set(flann_c_FOUND FALSE)
+endif()
+
+# Check for CUDA component request
+if("cuda" IN_LIST flann_FIND_COMPONENTS)
+    if(NOT TARGET flann::flann_cuda)
+        if(flann_FIND_REQUIRED_cuda)
+            message(FATAL_ERROR "FLANN CUDA component requested but not available. "
+                    "Rebuild FLANN with -DBUILD_CUDA_LIB=ON")
+        else()
+            message(WARNING "FLANN CUDA component not available")
+        endif()
+    endif()
+endif()
+
+# Check for C bindings component request
+if("c" IN_LIST flann_FIND_COMPONENTS)
+    if(NOT TARGET flann::flann)
+        if(flann_FIND_REQUIRED_c)
+            message(FATAL_ERROR "FLANN C bindings component requested but not available. "
+                    "Rebuild FLANN with -DBUILD_C_BINDINGS=ON")
+        else()
+            message(WARNING "FLANN C bindings component not available")
+        endif()
+    endif()
+endif()
+
+check_required_components("flann")
