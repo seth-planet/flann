@@ -265,10 +265,28 @@ TEST_F(KMeansCUDA_SIFT100K, TestSave)
 
 // ============================================================================
 // Byte Dataset Tests (L2<unsigned char>)
-// NOTE: Byte tests disabled - KDTreeCuda3dIndex doesn't have unsigned char
-// template instantiations, and they're triggered through Index<L2<uchar>>.
-// OpenCL version works because it doesn't have the KDTreeCuda3dIndex issue.
-// TODO: Enable when CUDA library supports unsigned char element types.
+//
+// STATUS: Deferred to future MR
+//
+// TECHNICAL BARRIER:
+// 1. CUDA K-Means kernel (kmeans_search_cooperative.cuh) is hardcoded for float:
+//    - Heap stores float distances: `float heap_dists[LOC_SIZE * 2]`
+//    - Query buffer is float: `float query[256]`
+//    - Distance computation uses `compute_l2_distance()` which returns float
+//
+// 2. To support unsigned char with L2 distance:
+//    - Template kernel on element type (not just K value)
+//    - Use int distances in heap (to avoid precision loss for small values)
+//    - Add dispatch logic in kmeans_cuda_index.h for different element types
+//    - Add template instantiations in kmeans_cuda_kernels.cu
+//
+// 3. KDTreeCuda3dIndex stubs throw for non-float types, blocking Index<L2<uchar>>
+//    factory instantiation (even though K-Means doesn't use KDTree)
+//
+// WORKAROUND: Distance kernel functions for unsigned char have been added to
+// distance_kernels.cuh (compute_l2_distance_uchar) for future use.
+//
+// OpenCL works because it doesn't go through the same factory/KDTree path.
 // ============================================================================
 
 
@@ -464,6 +482,118 @@ TEST_F(KMeansCUDA_SIFT10K, TestBoundaryKValues)
         delete[] gt_indices_k100.ptr();
         delete[] gt_dists_k100.ptr();
     }
+}
+
+
+// ============================================================================
+// Additional Edge Case Tests
+// ============================================================================
+
+/**
+ * Test: k=0 should throw exception
+ * Zero neighbors is an invalid request
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestZeroKThrows)
+{
+    flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+
+    EXPECT_THROW(index.buildCUDAKnnSearch(0, flann::SearchParams(128)), FLANNException);
+}
+
+/**
+ * Test: k exceeding dataset size should be handled gracefully
+ * Should either throw or return all available points
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestKExceedsDatasetSize)
+{
+    flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+
+    // k > dataset.rows should be handled (either throw or clamp)
+    size_t excessive_k = data.rows + 100;
+
+    // Expecting this to throw for unsupported k value (not in supported list)
+    EXPECT_THROW(index.buildCUDAKnnSearch(excessive_k, flann::SearchParams(128)), FLANNException);
+}
+
+/**
+ * Test: Multiple buildCUDAKnnSearch calls should work correctly
+ * Each call should properly reset GPU state
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestMultipleGPUSetup)
+{
+    flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+
+    // First setup with k=5
+    EXPECT_NO_THROW(index.buildCUDAKnnSearch(5, flann::SearchParams(128)));
+    EXPECT_TRUE(index.isGPUSearchReady());
+
+    // Run a search
+    flann::Matrix<size_t> indices1(new size_t[query.rows * 5], query.rows, 5);
+    flann::Matrix<float> dists1(new float[query.rows * 5], query.rows, 5);
+    index.knnSearch(query, indices1, dists1, 5, flann::SearchParams(128));
+
+    // Setup with different k=10
+    EXPECT_NO_THROW(index.buildCUDAKnnSearch(10, flann::SearchParams(128)));
+    EXPECT_TRUE(index.isGPUSearchReady());
+
+    // Run another search
+    flann::Matrix<size_t> indices2(new size_t[query.rows * 10], query.rows, 10);
+    flann::Matrix<float> dists2(new float[query.rows * 10], query.rows, 10);
+    index.knnSearch(query, indices2, dists2, 10, flann::SearchParams(128));
+
+    // Verify results are valid
+    for (size_t i = 0; i < query.rows; ++i) {
+        for (size_t j = 0; j < 10; ++j) {
+            EXPECT_GE(indices2[i][j], 0u);
+            EXPECT_LT(indices2[i][j], data.rows);
+        }
+    }
+
+    delete[] indices1.ptr();
+    delete[] dists1.ptr();
+    delete[] indices2.ptr();
+    delete[] dists2.ptr();
+}
+
+/**
+ * Test: Search with k that equals dataset size
+ * Edge case where we want all neighbors
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestKEqualsDatasetSize)
+{
+    // Create a small dataset for this test
+    const size_t small_size = 100;
+    flann::Matrix<float> small_data(new float[small_size * 128], small_size, 128);
+    for (size_t i = 0; i < small_size * 128; ++i) {
+        small_data.ptr()[i] = data.ptr()[i];
+    }
+
+    flann::Index<flann::L2<float>> index(small_data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+
+    // k=100 is supported and equals small dataset size
+    EXPECT_NO_THROW(index.buildCUDAKnnSearch(100, flann::SearchParams(128)));
+    EXPECT_TRUE(index.isGPUSearchReady());
+
+    // Run search - should return all points for each query
+    flann::Matrix<size_t> indices(new size_t[query.rows * 100], query.rows, 100);
+    flann::Matrix<float> dists(new float[query.rows * 100], query.rows, 100);
+    index.knnSearch(query, indices, dists, 100, flann::SearchParams(128));
+
+    // Verify all 100 results are valid indices
+    for (size_t i = 0; i < query.rows; ++i) {
+        for (size_t j = 0; j < 100; ++j) {
+            EXPECT_GE(indices[i][j], 0u);
+            EXPECT_LT(indices[i][j], small_size);
+        }
+    }
+
+    delete[] small_data.ptr();
+    delete[] indices.ptr();
+    delete[] dists.ptr();
 }
 
 int main(int argc, char** argv)

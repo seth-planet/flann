@@ -208,6 +208,143 @@ __device__ inline float compute_l2_distance(
 }
 
 // ============================================================================
+// L2 Distance Functions for unsigned char (byte) data
+// ============================================================================
+
+/**
+ * @brief L2 squared distance for unsigned char data (naive)
+ *
+ * Computes L2 distance for byte-valued features.
+ * Result is accumulated in int to avoid overflow.
+ *
+ * @param a First vector (unsigned char)
+ * @param b Second vector (unsigned char)
+ * @param dim Dimension of vectors
+ * @return L2 squared distance as int
+ */
+__device__ inline int compute_l2_squared_uchar_naive(
+    const unsigned char* a,
+    const unsigned char* b,
+    int dim
+) {
+    int sum = 0;
+    for (int i = 0; i < dim; i++) {
+        int diff = static_cast<int>(a[i]) - static_cast<int>(b[i]);
+        sum += diff * diff;
+    }
+    return sum;
+}
+
+/**
+ * @brief Vectorized L2 squared distance for unsigned char using uchar4
+ *
+ * Loads 4 bytes at once (32-bit transactions) for better memory bandwidth.
+ *
+ * @param a First vector (should be 4-byte aligned)
+ * @param b Second vector (should be 4-byte aligned)
+ * @param dim Dimension (must be multiple of 4)
+ * @return L2 squared distance as int
+ */
+__device__ inline int compute_l2_squared_uchar_vectorized(
+    const unsigned char* a,
+    const unsigned char* b,
+    int dim
+) {
+    int sum = 0;
+    int vec_dim = dim / 4;
+
+    const uchar4* a4 = reinterpret_cast<const uchar4*>(a);
+    const uchar4* b4 = reinterpret_cast<const uchar4*>(b);
+
+    for (int i = 0; i < vec_dim; i++) {
+        uchar4 va = a4[i];
+        uchar4 vb = b4[i];
+
+        int dx = static_cast<int>(va.x) - static_cast<int>(vb.x);
+        int dy = static_cast<int>(va.y) - static_cast<int>(vb.y);
+        int dz = static_cast<int>(va.z) - static_cast<int>(vb.z);
+        int dw = static_cast<int>(va.w) - static_cast<int>(vb.w);
+
+        sum += dx * dx + dy * dy + dz * dz + dw * dw;
+    }
+
+    return sum;
+}
+
+/**
+ * @brief Optimal L2 squared distance for unsigned char
+ *
+ * Combines vectorization and unrolling for best performance.
+ * Handles non-multiples of 4.
+ *
+ * @param a First vector (should be 4-byte aligned)
+ * @param b Second vector (should be 4-byte aligned)
+ * @param dim Dimension (will handle non-multiples of 4)
+ * @return L2 squared distance as int
+ */
+__device__ inline int compute_l2_squared_uchar_optimal(
+    const unsigned char* __restrict__ a,
+    const unsigned char* __restrict__ b,
+    int dim
+) {
+    int sum = 0;
+
+    // Process 4 bytes at a time
+    int vec_dim = dim / 4;
+    const uchar4* a4 = reinterpret_cast<const uchar4*>(a);
+    const uchar4* b4 = reinterpret_cast<const uchar4*>(b);
+
+    #pragma unroll 4
+    for (int i = 0; i < vec_dim; i++) {
+        uchar4 va = a4[i];
+        uchar4 vb = b4[i];
+
+        int dx = static_cast<int>(va.x) - static_cast<int>(vb.x);
+        int dy = static_cast<int>(va.y) - static_cast<int>(vb.y);
+        int dz = static_cast<int>(va.z) - static_cast<int>(vb.z);
+        int dw = static_cast<int>(va.w) - static_cast<int>(vb.w);
+
+        sum += dx * dx + dy * dy + dz * dz + dw * dw;
+    }
+
+    // Handle remainder (if dim not multiple of 4)
+    int remainder = dim % 4;
+    if (remainder > 0) {
+        int base = vec_dim * 4;
+        for (int i = 0; i < remainder; i++) {
+            int diff = static_cast<int>(a[base + i]) - static_cast<int>(b[base + i]);
+            sum += diff * diff;
+        }
+    }
+
+    return sum;
+}
+
+/**
+ * @brief Default L2 distance function for unsigned char
+ */
+__device__ inline int compute_l2_distance_uchar(
+    const unsigned char* a,
+    const unsigned char* b,
+    int dim
+) {
+    return compute_l2_squared_uchar_optimal(a, b, dim);
+}
+
+/**
+ * @brief L2 distance for unsigned char returning float
+ *
+ * Some callers expect float result type for compatibility.
+ */
+__device__ inline float compute_l2_distance_uchar_float(
+    const unsigned char* a,
+    const unsigned char* b,
+    int dim
+) {
+    return static_cast<float>(compute_l2_squared_uchar_optimal(a, b, dim));
+}
+
+// ============================================================================
 // Hamming Distance Functions (for binary descriptors)
 // ============================================================================
 

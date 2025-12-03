@@ -30,22 +30,21 @@
 #include "kdtree_cuda_3d_index.h"
 #include <flann/algorithms/dist.h>
 #include <flann/util/cuda/result_set.h>
-// #define THRUST_DEBUG 1
+
 #include <cuda.h>
 #include <thrust/gather.h>
 #include <thrust/copy.h>
 #include <thrust/device_vector.h>
-#include <vector_types.h>
-#include <flann/util/cutil_math.h>
 #include <thrust/host_vector.h>
-#include <thrust/copy.h>
-#include <flann/util/cuda/heap.h>
 #include <thrust/scan.h>
 #include <thrust/count.h>
 #include <thrust/device_malloc.h>
 #include <thrust/device_free.h>
-#include <flann/algorithms/kdtree_cuda_builder.h>
 #include <vector_types.h>
+
+#include <flann/util/cutil_math.h>
+#include <flann/util/cuda/heap.h>
+#include <flann/algorithms/kdtree_cuda_builder.h>
 namespace flann
 {
 
@@ -804,6 +803,98 @@ void KDTreeCuda3dIndex<Distance>::clearGpuBuffers()
     delete gpu_helper_;
     gpu_helper_=0;
 }
+
+// =============================================================================
+// Stub implementations for unsupported distance types
+// These provide link-time symbols but throw at runtime
+// =============================================================================
+
+// Helper: Primary template for unsupported GpuDistance types throws at runtime
+template<typename Distance>
+struct GpuDistanceOrThrow {
+    static void check() {
+        throw FLANNException("KDTreeCuda3dIndex: GPU search not supported for this distance type. "
+                            "Only L2<float>, L2_Simple<float>, and L1<float> are supported.");
+    }
+};
+
+// Specializations for supported types - no-op
+template<> struct GpuDistanceOrThrow<L2<float>> { static void check() {} };
+template<> struct GpuDistanceOrThrow<L2_Simple<float>> { static void check() {} };
+template<> struct GpuDistanceOrThrow<L1<float>> { static void check() {} };
+
+// Macro to generate stub instantiations for unsupported distance types
+#define FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(DISTANCE) \
+template<> \
+void KDTreeCuda3dIndex<DISTANCE>::uploadTreeToGpu() { \
+    GpuDistanceOrThrow<DISTANCE>::check(); \
+} \
+template<> \
+void KDTreeCuda3dIndex<DISTANCE>::clearGpuBuffers() { \
+    delete gpu_helper_; gpu_helper_ = 0; \
+} \
+template<> \
+void KDTreeCuda3dIndex<DISTANCE>::knnSearchGpu( \
+    const Matrix<typename DISTANCE::ElementType>&, Matrix<int>&, \
+    Matrix<typename DISTANCE::ResultType>&, size_t, const SearchParams&) const { \
+    GpuDistanceOrThrow<DISTANCE>::check(); \
+} \
+template<> \
+int KDTreeCuda3dIndex<DISTANCE>::radiusSearchGpu( \
+    const Matrix<typename DISTANCE::ElementType>&, Matrix<int>&, \
+    Matrix<typename DISTANCE::ResultType>&, float, const SearchParams&) const { \
+    GpuDistanceOrThrow<DISTANCE>::check(); return 0; \
+} \
+template<> \
+int KDTreeCuda3dIndex<DISTANCE>::radiusSearchGpu( \
+    const Matrix<typename DISTANCE::ElementType>&, \
+    std::vector<std::vector<int>>&, \
+    std::vector<std::vector<typename DISTANCE::ResultType>>&, \
+    float, const SearchParams&) const { \
+    GpuDistanceOrThrow<DISTANCE>::check(); return 0; \
+}
+
+// Instantiate stubs for all distance types used in flann.cpp C API
+// Float element types (double)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::L2<double>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::L1<double>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::L2_Simple<double>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::MinkowskiDistance<float>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::MinkowskiDistance<double>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::HellingerDistance<float>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::HellingerDistance<double>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::ChiSquareDistance<float>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::ChiSquareDistance<double>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::KL_Divergence<float>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::KL_Divergence<double>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::HistIntersectionDistance<float>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::HistIntersectionDistance<double>)
+
+// Integer element types
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::L2<int>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::L1<int>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::L2_Simple<int>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::MinkowskiDistance<int>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::HellingerDistance<int>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::ChiSquareDistance<int>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::KL_Divergence<int>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::HistIntersectionDistance<int>)
+
+// Unsigned char element types
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::L2<unsigned char>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::L1<unsigned char>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::L2_Simple<unsigned char>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::MinkowskiDistance<unsigned char>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::HellingerDistance<unsigned char>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::ChiSquareDistance<unsigned char>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::KL_Divergence<unsigned char>)
+FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB(flann::HistIntersectionDistance<unsigned char>)
+
+#undef FLANN_INSTANTIATE_KDTREE_CUDA_3D_STUB
+
+// =============================================================================
+// Working implementations for supported distance types (L2<float>, L2_Simple<float>, L1<float>)
+// =============================================================================
 
 // explicit instantiations for distance-independent functions
 template
