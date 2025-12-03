@@ -232,6 +232,108 @@ TEST_F(KMeansCUDA_SIFT100K, TestAddIncremental2)
     );
 }
 
+/**
+ * Large Dataset Point Removal Test
+ * Remove points and verify they don't appear in results
+ */
+TEST_F(KMeansCUDA_SIFT100K, TestRemove)
+{
+    TestRemove<flann::L2<float> >(
+        data,
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
+        query, indices, dists, knn,
+        flann::SearchParams(128)
+    );
+}
+
+/**
+ * Large Dataset Save/Load Test
+ * Verify index serialization and deserialization
+ */
+TEST_F(KMeansCUDA_SIFT100K, TestSave)
+{
+    TestSave<flann::L2<float> >(
+        data,
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2),
+        query, indices, dists, knn,
+        flann::SearchParams(128),
+        0.93,  // 93% recall (verified actual: ~95.8%)
+        gt_indices
+    );
+}
+
+
+// ============================================================================
+// Byte Dataset Tests (L2<unsigned char>)
+// NOTE: Byte tests disabled - KDTreeCuda3dIndex doesn't have unsigned char
+// template instantiations, and they're triggered through Index<L2<uchar>>.
+// OpenCL version works because it doesn't have the KDTreeCuda3dIndex issue.
+// TODO: Enable when CUDA library supports unsigned char element types.
+// ============================================================================
+
+
+// ============================================================================
+// K-Value Coverage Tests
+// Comprehensive testing of all supported k-values
+// ============================================================================
+
+/**
+ * Test all supported k-values for K-Means CUDA
+ * K-Means CUDA supports: 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestAllSupportedKValues)
+{
+    const std::vector<int> k_values = {1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100};
+
+    flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+
+    // Build ground truth with linear index
+    flann::Index<flann::L2<float>> linear_index(data, flann::LinearIndexParams());
+    linear_index.buildIndex();
+
+    printf("\n=== K-Value Coverage Test Results ===\n");
+
+    for (int k : k_values) {
+        // Skip k values larger than dataset if needed
+        if (static_cast<size_t>(k) > data.rows) continue;
+
+        flann::Matrix<size_t> indices_k(new size_t[query.rows * k], query.rows, k);
+        flann::Matrix<float> dists_k(new float[query.rows * k], query.rows, k);
+        flann::Matrix<size_t> gt_indices_k(new size_t[query.rows * k], query.rows, k);
+        flann::Matrix<float> gt_dists_k(new float[query.rows * k], query.rows, k);
+
+        // Compute ground truth
+        linear_index.knnSearch(query, gt_indices_k, gt_dists_k, k, flann::SearchParams(-1));
+
+        // Test CUDA search
+        ASSERT_NO_THROW(index.buildCUDAKnnSearch(k, flann::SearchParams(128)))
+            << "Failed to setup GPU for k=" << k;
+        ASSERT_TRUE(index.isGPUSearchReady()) << "GPU not ready for k=" << k;
+
+        index.knnSearch(query, indices_k, dists_k, k, flann::SearchParams(128));
+
+        // Verify results are valid
+        for (size_t i = 0; i < query.rows; ++i) {
+            for (int j = 0; j < k; ++j) {
+                EXPECT_GE(indices_k[i][j], 0u) << "Invalid index at k=" << k << ", query=" << i << ", pos=" << j;
+                EXPECT_LT(indices_k[i][j], data.rows) << "Index out of range at k=" << k;
+            }
+        }
+
+        // Compute and verify precision
+        float precision = compute_precision(gt_indices_k, indices_k);
+        float threshold = (k <= 10) ? 0.90f : 0.80f;  // Higher threshold for smaller k
+        EXPECT_GE(precision, threshold) << "k=" << k << " precision below threshold";
+        printf("k=%3d: precision=%.2f%%\n", k, precision * 100);
+
+        delete[] indices_k.ptr();
+        delete[] dists_k.ptr();
+        delete[] gt_indices_k.ptr();
+        delete[] gt_dists_k.ptr();
+    }
+}
+
 
 // ============================================================================
 // Error Handling Tests

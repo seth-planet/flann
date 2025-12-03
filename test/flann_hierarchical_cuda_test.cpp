@@ -184,6 +184,82 @@ TEST_F(HierarchicalCUDA_Brief100K, TestCopy2)
 
 
 // ============================================================================
+// K-Value Coverage Tests
+// Comprehensive testing of all supported k-values
+// ============================================================================
+
+/**
+ * Test all supported k-values for Hierarchical CUDA
+ * Hierarchical CUDA supports: 1, 2, 3, 4, 5, 8, 10, 12, 16, 20, 24, 32, 50, 64, 100, 128
+ * Performance tiers (by memory alignment):
+ *   Tier 1 (optimal): 16, 32, 64, 128 - int4 vectorization + cache-aligned
+ *   Tier 2 (good): 8, 24 - int4 vectorization
+ *   Tier 3 (vectorized): 4, 12, 20 - int4 vectorization
+ *   Tier 4 (compatible): 1, 2, 3, 5, 10, 50, 100 - Scalar fallback
+ */
+TEST_F(HierarchicalCUDA_Brief100K, TestAllSupportedKValues)
+{
+	const std::vector<int> k_values = {1, 2, 3, 4, 5, 8, 10, 12, 16, 20, 24, 32, 50, 64, 100, 128};
+
+	flann::Index<Distance> index(data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100));
+	index.buildIndex();
+
+	// Build ground truth with linear index
+	flann::Index<Distance> linear_index(data, flann::LinearIndexParams());
+	linear_index.buildIndex();
+
+	printf("\n=== K-Value Coverage Test Results (Hierarchical CUDA) ===\n");
+
+	for (int k : k_values) {
+		// Skip k values larger than dataset if needed
+		if (static_cast<size_t>(k) > data.rows) continue;
+
+		flann::Matrix<size_t> indices_k(new size_t[query.rows * k], query.rows, k);
+		flann::Matrix<DistanceType> dists_k(new DistanceType[query.rows * k], query.rows, k);
+		flann::Matrix<size_t> gt_indices_k(new size_t[query.rows * k], query.rows, k);
+		flann::Matrix<DistanceType> gt_dists_k(new DistanceType[query.rows * k], query.rows, k);
+
+		// Compute ground truth
+		linear_index.knnSearch(query, gt_indices_k, gt_dists_k, k, flann::SearchParams(-1));
+
+		// Test CUDA search
+		ASSERT_NO_THROW(index.buildCUDAKnnSearch(k, flann::SearchParams(2000)))
+			<< "Failed to setup GPU for k=" << k;
+		ASSERT_TRUE(index.isGPUSearchReady()) << "GPU not ready for k=" << k;
+
+		index.knnSearch(query, indices_k, dists_k, k, flann::SearchParams(2000));
+
+		// Verify results are valid
+		for (size_t i = 0; i < query.rows; ++i) {
+			for (int j = 0; j < k; ++j) {
+				EXPECT_LT(indices_k[i][j], data.rows) << "Index out of range at k=" << k;
+			}
+		}
+
+		// Compute and verify precision
+		float precision = compute_precision(gt_indices_k, indices_k);
+		// Hamming distance may have ties, so lower threshold
+		float threshold = (k <= 10) ? 0.85f : 0.75f;
+		EXPECT_GE(precision, threshold) << "k=" << k << " precision below threshold";
+
+		// Classify performance tier for reporting
+		const char* tier;
+		if (k == 16 || k == 32 || k == 64 || k == 128) tier = "Tier1";
+		else if (k == 8 || k == 24) tier = "Tier2";
+		else if (k == 4 || k == 12 || k == 20) tier = "Tier3";
+		else tier = "Tier4";
+
+		printf("k=%3d [%s]: precision=%.2f%%\n", k, tier, precision * 100);
+
+		delete[] indices_k.ptr();
+		delete[] dists_k.ptr();
+		delete[] gt_indices_k.ptr();
+		delete[] gt_dists_k.ptr();
+	}
+}
+
+
+// ============================================================================
 // Error Handling Tests
 // ============================================================================
 
