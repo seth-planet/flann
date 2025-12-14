@@ -33,6 +33,8 @@
 
 #include <queue>
 #include <vector>
+#include <memory>
+#include <cstring>
 #include <cuda_runtime.h>
 #ifndef NDEBUG
 #include <atomic>
@@ -42,6 +44,7 @@
 #include "flann/algorithms/cuda/cuda_utils.h"
 #include "flann/algorithms/cuda/nn_cuda_index.h"
 #include "flann/algorithms/cuda/kmeans_node_gpu.h"
+#include "flann/util/gpu_saving.h"
 
 namespace flann {
 namespace cuda {
@@ -304,8 +307,8 @@ public:
      */
     void buildCUDAKnnSearch(int knn, const SearchParams& params = SearchParams())
     {
-        // Validate index is built
-        if (!this->root_) {
+        // Validate index is built OR already loaded from GPU format
+        if (!this->root_ && !gpu_initialized_) {
             throw FLANNException("Cannot prepare GPU search: index not built yet. "
                                "Call buildIndex() first.");
         }
@@ -320,7 +323,7 @@ public:
                 "Use a supported k value or fall back to CPU search.");
         }
 
-        // Upload tree to GPU if not already done
+        // Upload tree to GPU if not already done (skip if loaded from GPU format)
         if (!gpu_initialized_) {
             uploadToGPU();
         }
@@ -345,6 +348,136 @@ public:
     bool isGPUSearchReady() const
     {
         return gpu_search_ready_;
+    }
+
+    /**
+     * @brief Check if index has GPU-optimized format available
+     *
+     * Returns true if GPU buffers are initialized and the index can be saved
+     * in GPU-optimized format for fast reloading.
+     */
+    bool hasGPUFormat() const
+    {
+        return gpu_initialized_;
+    }
+
+    /**
+     * @brief Convert index to GPU-optimized format
+     *
+     * Ensures GPU buffers are populated for GPU-optimized saving.
+     * Also discards the CPU tree structure to reduce memory usage.
+     *
+     * After calling this method:
+     * - GPU search will work (via knnSearch with GPU fallback)
+     * - CPU search will NOT work (root_ is null)
+     * - Index can be saved in GPU-optimized format
+     *
+     * @throws FLANNException if tree not built (buildIndex() not called)
+     */
+    void convertToGPUFormat()
+    {
+        if (!this->root_) {
+            throw FLANNException("Cannot convert to GPU format: index not built. "
+                               "Call buildIndex() first.");
+        }
+        if (!gpu_initialized_) {
+            uploadToGPU();
+        }
+        // Discard CPU tree to save memory
+        discardCPUTree();
+    }
+
+    /**
+     * @brief Save index to file (GPU format if available, CPU format otherwise)
+     *
+     * If GPU buffers are initialized, saves in GPU-optimized format with
+     * signature "FLANN_GPU_INDEX_v1.0". Otherwise falls back to CPU format.
+     *
+     * GPU format stores flat arrays directly, enabling fast reload without
+     * tree reconstruction.
+     *
+     * @param stream Output file stream
+     */
+    void saveIndex(FILE* stream) override
+    {
+        if (!gpu_initialized_) {
+            // Fall back to CPU format
+            BaseClass::saveIndex(stream);
+            return;
+        }
+
+        serialization::SaveArchive sa(stream);
+
+        // Build GPU header with all metadata
+        GPUIndexHeader header;
+        header.h.data_type = flann_datatype_value<ElementType>::value;
+        header.h.index_type = FLANN_INDEX_KMEANS_GPU_SAVED;
+        header.h.rows = this->size_;
+        header.h.cols = this->veclen_;
+        header.h.padded_veclen = padded_veclen_;
+        header.h.num_nodes = num_nodes_;
+        header.h.node_index_size = node_index_gpu_.count();
+        header.h.leaf_count = leaf_count_;
+        header.h.branching = this->branching_;
+        header.h.iterations = this->iterations_;
+        header.h.cb_index = this->cb_index_;
+        header.h.centers_init = this->centers_init_;
+
+        sa & header;
+
+        // Download and save GPU arrays
+        std::vector<int> node_index_host(header.h.node_index_size);
+        std::vector<float> node_variance_host(num_nodes_);
+        std::vector<ElementType> pivots_host(num_nodes_ * padded_veclen_);
+        std::vector<ElementType> dataset_host(this->size_ * padded_veclen_);
+
+        node_index_gpu_.download(node_index_host.data(), header.h.node_index_size);
+        node_variance_gpu_.download(node_variance_host.data(), num_nodes_);
+        tree_pivots_gpu_.download(pivots_host.data(), num_nodes_ * padded_veclen_);
+        dataset_gpu_.download(dataset_host.data(), this->size_ * padded_veclen_);
+
+        // Serialize arrays
+        sa & serialization::make_binary_object(
+            node_index_host.data(),
+            header.h.node_index_size * sizeof(int));
+        sa & serialization::make_binary_object(
+            node_variance_host.data(),
+            num_nodes_ * sizeof(float));
+        sa & serialization::make_binary_object(
+            pivots_host.data(),
+            num_nodes_ * padded_veclen_ * sizeof(ElementType));
+        sa & serialization::make_binary_object(
+            dataset_host.data(),
+            this->size_ * padded_veclen_ * sizeof(ElementType));
+
+        // Save NNIndex base data
+        sa & this->last_id_;
+        sa & this->ids_;
+        sa & this->removed_;
+        if (this->removed_) {
+            sa & this->removed_points_;
+        }
+        sa & this->removed_count_;
+    }
+
+    /**
+     * @brief Load index from file (auto-detects GPU vs CPU format)
+     *
+     * Detects format by checking file signature:
+     * - "FLANN_GPU_INDEX_v1.0" → GPU format (direct GPU upload)
+     * - "FLANN_INDEX_v1.1" → CPU format (via BaseClass)
+     *
+     * @param stream Input file stream
+     */
+    void loadIndex(FILE* stream) override
+    {
+        if (GPUIndexHeader::detectGPUFormat(stream)) {
+            loadIndexGPU(stream);
+        } else {
+            // Fall back to CPU format
+            freeGPUMemory();
+            BaseClass::loadIndex(stream);
+        }
     }
 
     /**
@@ -563,6 +696,144 @@ public:
     }
 
 protected:
+    /**
+     * @brief Load GPU-optimized format from file
+     *
+     * Reads flat GPU arrays directly and uploads to GPU memory.
+     * Does NOT reconstruct CPU tree - GPU search only after load.
+     *
+     * @param stream Input file stream
+     * @throws FLANNException on validation errors
+     */
+    void loadIndexGPU(FILE* stream)
+    {
+        freeGPUMemory();
+
+        serialization::LoadArchive la(stream);
+
+        GPUIndexHeader header;
+        la & header;
+
+        // Validate header
+        if (header.h.data_type != flann_datatype_value<ElementType>::value) {
+            throw FLANNException("Data type mismatch in GPU index file");
+        }
+        if (header.h.index_type != FLANN_INDEX_KMEANS_GPU_SAVED) {
+            throw FLANNException("Index type mismatch: expected KMEANS_GPU_SAVED");
+        }
+
+        // Restore metadata
+        this->size_ = header.h.rows;
+        this->veclen_ = header.h.cols;
+        this->size_at_build_ = header.h.rows;
+        padded_veclen_ = header.h.padded_veclen;
+        num_nodes_ = header.h.num_nodes;
+        leaf_count_ = header.h.leaf_count;
+        this->branching_ = header.h.branching;
+        this->iterations_ = header.h.iterations;
+        this->cb_index_ = header.h.cb_index;
+        this->centers_init_ = header.h.centers_init;
+
+        // Allocate and load node arrays from file (use unique_ptr to avoid zero-init)
+        std::unique_ptr<int[]> node_index_host(new int[header.h.node_index_size]);
+        std::unique_ptr<float[]> node_variance_host(new float[num_nodes_]);
+        std::unique_ptr<ElementType[]> pivots_host(new ElementType[num_nodes_ * padded_veclen_]);
+
+        la & serialization::make_binary_object(
+            node_index_host.get(),
+            header.h.node_index_size * sizeof(int));
+        la & serialization::make_binary_object(
+            node_variance_host.get(),
+            num_nodes_ * sizeof(float));
+        la & serialization::make_binary_object(
+            pivots_host.get(),
+            num_nodes_ * padded_veclen_ * sizeof(ElementType));
+
+        // Upload node arrays to GPU
+        node_index_gpu_.resize(header.h.node_index_size);
+        node_variance_gpu_.resize(num_nodes_);
+        tree_pivots_gpu_.resize(num_nodes_ * padded_veclen_);
+
+        node_index_gpu_.upload(node_index_host.get(), header.h.node_index_size);
+        node_variance_gpu_.upload(node_variance_host.get(), num_nodes_);
+        tree_pivots_gpu_.upload(pivots_host.get(), num_nodes_ * padded_veclen_);
+
+        // Reconstruct points_ and upload dataset to GPU
+        // Use fast path when no padding is needed (veclen already aligned to 4)
+        delete[] this->data_ptr_;
+        this->data_ptr_ = new ElementType[this->size_ * this->veclen_];
+        this->points_.resize(this->size_);
+
+        if (this->veclen_ == padded_veclen_) {
+            // FAST PATH: No padding - read directly into data_ptr_, no temporary buffer
+            la & serialization::make_binary_object(
+                this->data_ptr_,
+                this->size_ * this->veclen_ * sizeof(ElementType));
+
+            dataset_gpu_.resize(this->size_ * this->veclen_);
+            dataset_gpu_.upload(this->data_ptr_, this->size_ * this->veclen_);
+
+            // Set up points_ pointers (no copy needed)
+            for (size_t i = 0; i < this->size_; ++i) {
+                this->points_[i] = this->data_ptr_ + i * this->veclen_;
+            }
+        } else {
+            // PADDED PATH: Use temporary buffer with memcpy per row
+            std::unique_ptr<ElementType[]> dataset_host(
+                new ElementType[this->size_ * padded_veclen_]);
+
+            la & serialization::make_binary_object(
+                dataset_host.get(),
+                this->size_ * padded_veclen_ * sizeof(ElementType));
+
+            dataset_gpu_.resize(this->size_ * padded_veclen_);
+            dataset_gpu_.upload(dataset_host.get(), this->size_ * padded_veclen_);
+
+            // Copy with memcpy per row (faster than element-by-element)
+            for (size_t i = 0; i < this->size_; ++i) {
+                this->points_[i] = this->data_ptr_ + i * this->veclen_;
+                std::memcpy(this->points_[i],
+                           &dataset_host[i * padded_veclen_],
+                           this->veclen_ * sizeof(ElementType));
+            }
+        }
+
+        // Load NNIndex base data
+        la & this->last_id_;
+        la & this->ids_;
+        la & this->removed_;
+        if (this->removed_) {
+            la & this->removed_points_;
+        }
+        la & this->removed_count_;
+
+        // Restore index params
+        this->index_params_["algorithm"] = FLANN_INDEX_KMEANS_CUDA;
+        this->index_params_["branching"] = this->branching_;
+        this->index_params_["iterations"] = this->iterations_;
+        this->index_params_["centers_init"] = this->centers_init_;
+        this->index_params_["cb_index"] = this->cb_index_;
+
+        gpu_initialized_ = true;
+        // Note: root_ is NOT reconstructed - GPU format is GPU-only
+        // CPU search will not work until buildIndex() is called
+    }
+
+    /**
+     * @brief Discard CPU tree to save memory
+     *
+     * Called by convertToGPUFormat() to free the CPU tree structure
+     * after GPU buffers are populated. After this, CPU search will not work.
+     */
+    void discardCPUTree()
+    {
+        if (this->root_) {
+            // Memory pool cleans up nodes on free
+            this->pool_.free();
+            this->root_ = nullptr;
+        }
+    }
+
     /**
      * @brief GPU k-NN search implementation (internal)
      *

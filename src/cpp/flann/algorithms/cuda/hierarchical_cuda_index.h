@@ -34,7 +34,8 @@
 #include <queue>
 #include <map>  // For std::map
 #include <utility>  // For std::swap
-#include <cstring>  // For strlen
+#include <cstring>  // For strlen, memcpy
+#include <memory>   // For std::unique_ptr
 #include <unistd.h>  // For write
 #include <cuda_runtime.h>
 #ifndef NDEBUG
@@ -616,34 +617,56 @@ protected:
         this->leaf_max_size_ = header.h.leaf_max_size;
         this->centers_init_ = header.h.centers_init;
 
-        // Allocate and load arrays from file
+        // Allocate and load node_index from file (use unique_ptr to avoid zero-init)
         // NOTE: No nodes array - pivot_index is stored interleaved in node_index
         // NOTE: pivots NOT loaded - they're looked up from dataset via pivot_index
-        std::vector<int> node_index_host(header.h.node_index_size);
-        std::vector<ElementType> dataset_host(this->size_ * padded_bytes);
+        std::unique_ptr<int[]> node_index_host(new int[header.h.node_index_size]);
 
         la & serialization::make_binary_object(
-            node_index_host.data(),
+            node_index_host.get(),
             header.h.node_index_size * sizeof(int));
-        la & serialization::make_binary_object(
-            dataset_host.data(),
-            this->size_ * padded_bytes * sizeof(ElementType));
 
-        // Upload directly to GPU
+        // Upload node_index to GPU
         gpu_node_index_.resize(header.h.node_index_size);
-        gpu_dataset_.resize(this->size_ * padded_bytes);
+        gpu_node_index_.upload(node_index_host.get(), header.h.node_index_size);
 
-        gpu_node_index_.upload(node_index_host.data(), header.h.node_index_size);
-        gpu_dataset_.upload(dataset_host.data(), this->size_ * padded_bytes);
-
-        // Reconstruct points_ from padded dataset (for getPoint() compatibility)
+        // Reconstruct points_ and upload dataset to GPU
+        // Use fast path when no padding is needed (veclen already aligned to 4)
         delete[] this->data_ptr_;
         this->data_ptr_ = new ElementType[this->size_ * this->veclen_];
         this->points_.resize(this->size_);
-        for (size_t i = 0; i < this->size_; ++i) {
-            this->points_[i] = this->data_ptr_ + i * this->veclen_;
-            for (size_t j = 0; j < this->veclen_; ++j) {
-                this->points_[i][j] = dataset_host[i * padded_bytes + j];
+
+        if (static_cast<size_t>(padded_bytes) == this->veclen_) {
+            // FAST PATH: No padding - read directly into data_ptr_, no temporary buffer
+            la & serialization::make_binary_object(
+                this->data_ptr_,
+                this->size_ * this->veclen_ * sizeof(ElementType));
+
+            gpu_dataset_.resize(this->size_ * this->veclen_);
+            gpu_dataset_.upload(this->data_ptr_, this->size_ * this->veclen_);
+
+            // Set up points_ pointers (no copy needed)
+            for (size_t i = 0; i < this->size_; ++i) {
+                this->points_[i] = this->data_ptr_ + i * this->veclen_;
+            }
+        } else {
+            // PADDED PATH: Use temporary buffer with memcpy per row
+            std::unique_ptr<ElementType[]> dataset_host(
+                new ElementType[this->size_ * padded_bytes]);
+
+            la & serialization::make_binary_object(
+                dataset_host.get(),
+                this->size_ * padded_bytes * sizeof(ElementType));
+
+            gpu_dataset_.resize(this->size_ * padded_bytes);
+            gpu_dataset_.upload(dataset_host.get(), this->size_ * padded_bytes);
+
+            // Copy with memcpy per row (faster than element-by-element)
+            for (size_t i = 0; i < this->size_; ++i) {
+                this->points_[i] = this->data_ptr_ + i * this->veclen_;
+                std::memcpy(this->points_[i],
+                           &dataset_host[i * padded_bytes],
+                           this->veclen_ * sizeof(ElementType));
             }
         }
 
