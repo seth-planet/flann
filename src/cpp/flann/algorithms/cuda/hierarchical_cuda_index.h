@@ -45,6 +45,7 @@
 #include "flann/algorithms/cuda/cuda_utils.h"
 #include "flann/algorithms/cuda/nn_cuda_index.h"
 #include "flann/algorithms/cuda/kmeans_node_gpu.h"
+#include "flann/util/gpu_saving.h"
 
 namespace flann {
 namespace cuda {
@@ -58,7 +59,7 @@ namespace cuda {
 bool launch_hierarchical_search_cooperative(
     const unsigned char* dataset,
     const unsigned char* queries,
-    const unsigned char* tree_pivots,
+    const KMeansNodeGPU* tree_nodes,
     const int* device_node_index,
     int* result_indices,
     int* result_distances,
@@ -146,7 +147,6 @@ public:
           gpu_search_ready_(false),
           gpu_num_trees_(0),
           gpu_nodes_(),
-          gpu_pivots_(),
           gpu_dataset_(),
           gpu_node_index_()          // CRITICAL FIX: Initialize nodeIndex buffer
     {
@@ -168,7 +168,6 @@ public:
           gpu_search_ready_(false),
           gpu_num_trees_(0),
           gpu_nodes_(),
-          gpu_pivots_(),
           gpu_dataset_(),
           gpu_node_index_()          // CRITICAL FIX: Initialize nodeIndex buffer
     {
@@ -188,7 +187,6 @@ public:
           gpu_search_ready_(false),
           gpu_num_trees_(0),
           gpu_nodes_(),              // Explicit default construction
-          gpu_pivots_(),             // Prevents copy attempt (copy ctor deleted)
           gpu_dataset_(),            // CUDABuffer starts empty (ptr_ = nullptr)
           gpu_node_index_()          // CRITICAL FIX: Initialize nodeIndex buffer
     {
@@ -208,7 +206,6 @@ public:
           gpu_search_ready_(false),
           gpu_num_trees_(0),
           gpu_nodes_(),              // Explicit default construction
-          gpu_pivots_(),             // Prevents copy attempt (copy ctor deleted)
           gpu_dataset_(),            // CUDABuffer starts empty (ptr_ = nullptr)
           gpu_node_index_()          // CRITICAL FIX: Initialize nodeIndex buffer
     {
@@ -270,17 +267,20 @@ public:
      */
     void buildCUDAKnnSearch(int knn, const SearchParams& params = SearchParams())
     {
-        if (this->tree_roots_.empty()) {
+        // Allow case where GPU is already initialized from loading GPU format file
+        if (this->tree_roots_.empty() && !gpu_initialized_) {
             throw FLANNException("Cannot prepare GPU search: index not built yet. "
                                "Call buildIndex() first.");
         }
 
-        // Check that trees are large enough (not degenerate)
-        for (size_t i = 0; i < this->tree_roots_.size(); ++i) {
-            if (this->tree_roots_[i]->childs.empty()) {
-                throw FLANNException("Tree " + std::to_string(i) + " is degenerate "
-                                   "(root is a leaf). Try reducing branching factor or "
-                                   "increasing dataset size.");
+        // Check that trees are large enough (not degenerate) - skip if loaded from GPU format
+        if (!this->tree_roots_.empty()) {
+            for (size_t i = 0; i < this->tree_roots_.size(); ++i) {
+                if (this->tree_roots_[i]->childs.empty()) {
+                    throw FLANNException("Tree " + std::to_string(i) + " is degenerate "
+                                       "(root is a leaf). Try reducing branching factor or "
+                                       "increasing dataset size.");
+                }
             }
         }
 
@@ -308,7 +308,7 @@ public:
             bool success = launch_hierarchical_search_cooperative(
                 reinterpret_cast<const unsigned char*>(gpu_dataset_.get()),
                 reinterpret_cast<const unsigned char*>(warmup_queries.get()),
-                reinterpret_cast<const unsigned char*>(gpu_pivots_.get()),
+                gpu_nodes_.get(),  // Tree nodes for pivot_index lookup
                 gpu_node_index_.get(),
                 warmup_indices.get(),
                 warmup_dists.get(),
@@ -345,6 +345,118 @@ public:
     }
 
     /**
+     * @brief Check if index has GPU-optimized format available
+     */
+    bool hasGPUFormat() const
+    {
+        return gpu_initialized_;
+    }
+
+    /**
+     * @brief Convert index to GPU-optimized format
+     *
+     * Ensures GPU buffers are populated for GPU-optimized saving.
+     * Also discards the CPU tree structure to reduce memory usage.
+     *
+     * @throws FLANNException if tree not built
+     */
+    void convertToGPUFormat()
+    {
+        if (this->tree_roots_.empty()) {
+            throw FLANNException("Cannot convert to GPU format: index not built. "
+                               "Call buildIndex() first.");
+        }
+        if (!gpu_initialized_) {
+            uploadToGPU();
+        }
+        // Discard CPU tree to save memory
+        discardCPUTree();
+    }
+
+    /**
+     * @brief Save index to file (GPU format if available, CPU format otherwise)
+     *
+     * @param stream Output file stream
+     */
+    void saveIndex(FILE* stream) override
+    {
+        if (!gpu_initialized_) {
+            // Fall back to CPU format
+            BaseClass::saveIndex(stream);
+            return;
+        }
+
+        serialization::SaveArchive sa(stream);
+
+        // Get padded size for calculation
+        int padded_bytes = 4 * ((this->veclen_ + 3) / 4);
+        int num_nodes = gpu_nodes_.count();
+
+        // Build GPU header with all metadata
+        GPUIndexHeader header;
+        header.h.data_type = flann_datatype_value<ElementType>::value;
+        header.h.index_type = FLANN_INDEX_HIERARCHICAL_GPU_SAVED;
+        header.h.rows = this->size_;
+        header.h.cols = this->veclen_;
+        header.h.padded_veclen = padded_bytes;
+        header.h.num_nodes = num_nodes;
+        header.h.node_index_size = gpu_node_index_.count();
+        header.h.leaf_count = 0;  // Not used for hierarchical
+        header.h.branching = this->branching_;
+        header.h.trees = gpu_num_trees_;
+        header.h.leaf_max_size = this->leaf_max_size_;
+        header.h.centers_init = this->centers_init_;
+
+        sa & header;
+
+        // Download and save GPU arrays
+        // NOTE: pivots NOT saved - they're looked up from dataset via pivot_index
+        std::vector<KMeansNodeGPU> nodes_host(num_nodes);
+        std::vector<int> node_index_host(header.h.node_index_size);
+        std::vector<ElementType> dataset_host(this->size_ * padded_bytes);
+
+        gpu_nodes_.download(nodes_host.data(), num_nodes);
+        gpu_node_index_.download(node_index_host.data(), header.h.node_index_size);
+        gpu_dataset_.download(dataset_host.data(), this->size_ * padded_bytes);
+
+        // Serialize arrays (pivots not stored - accessed via pivot_index in dataset)
+        sa & serialization::make_binary_object(
+            nodes_host.data(),
+            num_nodes * sizeof(KMeansNodeGPU));
+        sa & serialization::make_binary_object(
+            node_index_host.data(),
+            header.h.node_index_size * sizeof(int));
+        sa & serialization::make_binary_object(
+            dataset_host.data(),
+            this->size_ * padded_bytes * sizeof(ElementType));
+
+        // Save NNIndex base data
+        sa & this->last_id_;
+        sa & this->ids_;
+        sa & this->removed_;
+        if (this->removed_) {
+            sa & this->removed_points_;
+        }
+        sa & this->removed_count_;
+    }
+
+    /**
+     * @brief Load index from file (auto-detects GPU vs CPU format)
+     *
+     * @param stream Input file stream
+     */
+    void loadIndex(FILE* stream) override
+    {
+        if (GPUIndexHeader::detectGPUFormat(stream)) {
+            loadIndexGPU(stream);
+        } else {
+            // Fall back to CPU format
+            freeGPUMemory();
+            BaseClass::loadIndex(stream);
+        }
+    }
+
+    /**
      * @brief Invalidate GPU data structures after adding points
      *
      * Adding points changes the tree structure, so GPU buffers must be rebuilt.
@@ -378,7 +490,6 @@ public:
 
         // Swap GPU buffers using std::swap (works with move semantics)
         std::swap(gpu_nodes_, other.gpu_nodes_);
-        std::swap(gpu_pivots_, other.gpu_pivots_);
         std::swap(gpu_dataset_, other.gpu_dataset_);
         std::swap(gpu_node_index_, other.gpu_node_index_);
     }
@@ -473,12 +584,113 @@ protected:
     {
         // Move-assign empty buffers to trigger RAII cleanup
         gpu_nodes_ = CUDABuffer<KMeansNodeGPU>();
-        gpu_pivots_ = CUDABuffer<ElementType>();
         gpu_dataset_ = CUDABuffer<ElementType>();
         gpu_node_index_ = CUDABuffer<int>();
 
         gpu_initialized_ = false;
         gpu_search_ready_ = false;
+    }
+
+    /**
+     * @brief Load GPU-optimized format from file
+     *
+     * @param stream Input file stream
+     */
+    void loadIndexGPU(FILE* stream)
+    {
+        freeGPUMemory();
+
+        serialization::LoadArchive la(stream);
+
+        GPUIndexHeader header;
+        la & header;
+
+        // Validate header
+        if (header.h.data_type != flann_datatype_value<ElementType>::value) {
+            throw FLANNException("Data type mismatch in GPU index file");
+        }
+        if (header.h.index_type != FLANN_INDEX_HIERARCHICAL_GPU_SAVED) {
+            throw FLANNException("Index type mismatch: expected HIERARCHICAL_GPU_SAVED");
+        }
+
+        // Restore metadata
+        this->size_ = header.h.rows;
+        this->veclen_ = header.h.cols;
+        this->size_at_build_ = header.h.rows;
+        int padded_bytes = header.h.padded_veclen;
+        int num_nodes = header.h.num_nodes;
+        gpu_num_trees_ = header.h.trees;
+        this->branching_ = header.h.branching;
+        this->leaf_max_size_ = header.h.leaf_max_size;
+        this->centers_init_ = header.h.centers_init;
+
+        // Allocate and load arrays from file
+        // NOTE: pivots NOT loaded - they're looked up from dataset via pivot_index
+        std::vector<KMeansNodeGPU> nodes_host(num_nodes);
+        std::vector<int> node_index_host(header.h.node_index_size);
+        std::vector<ElementType> dataset_host(this->size_ * padded_bytes);
+
+        la & serialization::make_binary_object(
+            nodes_host.data(),
+            num_nodes * sizeof(KMeansNodeGPU));
+        la & serialization::make_binary_object(
+            node_index_host.data(),
+            header.h.node_index_size * sizeof(int));
+        la & serialization::make_binary_object(
+            dataset_host.data(),
+            this->size_ * padded_bytes * sizeof(ElementType));
+
+        // Upload directly to GPU (no pivots - accessed via pivot_index in dataset)
+        gpu_nodes_.resize(num_nodes);
+        gpu_node_index_.resize(header.h.node_index_size);
+        gpu_dataset_.resize(this->size_ * padded_bytes);
+
+        gpu_nodes_.upload(nodes_host.data(), num_nodes);
+        gpu_node_index_.upload(node_index_host.data(), header.h.node_index_size);
+        gpu_dataset_.upload(dataset_host.data(), this->size_ * padded_bytes);
+
+        // Reconstruct points_ from padded dataset (for getPoint() compatibility)
+        delete[] this->data_ptr_;
+        this->data_ptr_ = new ElementType[this->size_ * this->veclen_];
+        this->points_.resize(this->size_);
+        for (size_t i = 0; i < this->size_; ++i) {
+            this->points_[i] = this->data_ptr_ + i * this->veclen_;
+            for (size_t j = 0; j < this->veclen_; ++j) {
+                this->points_[i][j] = dataset_host[i * padded_bytes + j];
+            }
+        }
+
+        // Load NNIndex base data
+        la & this->last_id_;
+        la & this->ids_;
+        la & this->removed_;
+        if (this->removed_) {
+            la & this->removed_points_;
+        }
+        la & this->removed_count_;
+
+        // Restore index params
+        this->index_params_["algorithm"] = FLANN_INDEX_HIERARCHICAL_CUDA;
+        this->index_params_["branching"] = this->branching_;
+        this->index_params_["trees"] = gpu_num_trees_;
+        this->index_params_["leaf_max_size"] = this->leaf_max_size_;
+        this->index_params_["centers_init"] = this->centers_init_;
+
+        gpu_initialized_ = true;
+        // Note: tree_roots_ NOT reconstructed - GPU format is GPU-only
+    }
+
+    /**
+     * @brief Discard CPU tree to save memory
+     */
+    void discardCPUTree()
+    {
+        // Clear tree roots (frees memory pool)
+        for (size_t i = 0; i < this->tree_roots_.size(); ++i) {
+            // Nodes are pool-allocated, pool handles cleanup
+        }
+        this->tree_roots_.clear();
+        this->pool_.free();
     }
 
     // ========================================================================
@@ -534,7 +746,7 @@ protected:
 
         // Allocate host memory for flattening
         std::vector<KMeansNodeGPU> nodes_host(num_nodes);
-        std::vector<ElementType> pivots_host(num_nodes * padded_veclen, 0);  // Zero-initialize padding
+        // NOTE: pivots NOT stored - looked up from dataset via pivot_index
         std::vector<ElementType> dataset_host(this->size_ * padded_veclen, 0);
         std::vector<int> dataset_indices;  // Flattened leaf indices
 
@@ -587,20 +799,15 @@ protected:
 
             KMeansNodeGPU& gpu_node = nodes_host[node_slot];
 
-            // CRITICAL FIX: Copy pivot for ALL nodes (leaves AND parents)
-            // OpenCL does this at hierarchical_opencl_index.h:721-727
-            // The search kernel needs pivots for all children when exploring branches
-            if (node->pivot != nullptr) {
-                std::memcpy(&pivots_host[node_slot * padded_veclen],
-                           node->pivot,
-                           this->veclen_ * sizeof(ElementType));
-            }
+            // NOTE: pivots NOT copied - looked up from dataset via pivot_index
 
             if (node->childs.empty()) {
                 // Leaf node
                 int leaf_offset = dataset_indices.size();
                 gpu_node.child_start = -(leaf_offset + 1);
-                gpu_node.pivot_index = -1;
+                // Preserve pivot_index for dataset lookup (NOT -1!)
+                gpu_node.pivot_index = (node->pivot_index != SIZE_MAX)
+                                     ? static_cast<int>(node->pivot_index) : -1;
                 gpu_node.radius = 0.0f;
                 gpu_node.variance = 0.0f;
 
@@ -669,13 +876,12 @@ protected:
         }
 
         // Allocate and upload GPU buffers using .resize()
+        // NOTE: no pivots buffer - pivots accessed via pivot_index in dataset
         gpu_nodes_.resize(num_nodes);
-        gpu_pivots_.resize(num_nodes * padded_veclen);
         gpu_dataset_.resize(this->size_ * padded_veclen);
         gpu_node_index_.resize(hybrid_size);  // CRITICAL: Hybrid array with embedded leaf data
 
         gpu_nodes_.upload(nodes_host.data(), num_nodes);
-        gpu_pivots_.upload(pivots_host.data(), num_nodes * padded_veclen);
         gpu_dataset_.upload(dataset_host.data(), this->size_ * padded_veclen);
         gpu_node_index_.upload(hybrid_node_index.data(), hybrid_size);  // CRITICAL: Upload hybrid array
 
@@ -794,7 +1000,7 @@ protected:
         bool success = launch_hierarchical_search_cooperative(
             reinterpret_cast<const unsigned char*>(gpu_dataset_.get()),
             reinterpret_cast<const unsigned char*>(gpu_queries.get()),
-            reinterpret_cast<const unsigned char*>(gpu_pivots_.get()),
+            gpu_nodes_.get(),  // Tree nodes for pivot_index lookup into dataset
             gpu_node_index_.get(),  // CRITICAL: Pass nodeIndex indirection array
             gpu_indices.get(),
             gpu_dists.get(),
@@ -848,8 +1054,8 @@ private:
     int gpu_num_trees_;         ///< Number of trees (tree roots are nodes 0..num_trees-1)
 
     // GPU buffers (RAII wrappers for automatic cleanup)
-    mutable CUDABuffer<KMeansNodeGPU> gpu_nodes_;      ///< Flattened node array
-    mutable CUDABuffer<ElementType> gpu_pivots_;       ///< Pivot descriptors (padded)
+    // NOTE: No gpu_pivots_ - pivots accessed via pivot_index in dataset (eliminates duplication)
+    mutable CUDABuffer<KMeansNodeGPU> gpu_nodes_;      ///< Flattened node array (includes pivot_index)
     mutable CUDABuffer<ElementType> gpu_dataset_;      ///< Dataset descriptors (padded)
     mutable CUDABuffer<int> gpu_node_index_;           ///< Indirection array matching OpenCL (pointers not indices)
 
