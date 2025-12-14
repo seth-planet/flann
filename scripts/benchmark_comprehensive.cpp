@@ -121,18 +121,20 @@ struct BenchmarkResult {
     string implementation;
     string algorithm;
 
-    Stats build_time;
-    Stats gpu_upload_time;
-    Stats search_time;
+    double load_time;           // Dataset load from disk (once per benchmark)
+    Stats build_time;           // CPU index construction
+    Stats gpu_upload_time;      // GPU data transfer
+    Stats search_time_cold;     // Warmup searches (cold caches)
+    Stats search_time;          // Timed searches (warm caches)
     double total_time;
 
-    double precision;        // Recall@k
+    double precision;           // Recall@k
     double queries_per_sec;
 
     size_t cpu_memory_mb;
     size_t gpu_memory_mb;
 
-    BenchmarkResult() : total_time(0), precision(0), queries_per_sec(0),
+    BenchmarkResult() : load_time(0), total_time(0), precision(0), queries_per_sec(0),
                         cpu_memory_mb(0), gpu_memory_mb(0) {}
 };
 
@@ -223,7 +225,7 @@ BenchmarkResult benchmark_cpu_hierarchical(
     result.implementation = "CPU";
     result.algorithm = "Hierarchical";
 
-    vector<double> build_times, search_times;
+    vector<double> build_times, search_times, warmup_search_times;
 
     HierarchicalClusteringIndexParams params(
         config.branching,
@@ -256,11 +258,19 @@ BenchmarkResult benchmark_cpu_hierarchical(
         Matrix<size_t> indices(new size_t[queries.rows * config.k], queries.rows, config.k);
         Matrix<unsigned int> distances(new unsigned int[queries.rows * config.k], queries.rows, config.k);
 
-        cout << "  Searching..." << flush;
+        if (is_warmup) {
+            cout << "  Searching (cold)..." << flush;
+        } else {
+            cout << "  Searching (warm)..." << flush;
+        }
         timer.reset();
         index.knnSearch(queries, indices, distances, config.k, SearchParams(config.checks));
         double search_time = timer.elapsed();
-        if (!is_warmup) search_times.push_back(search_time);
+        if (is_warmup) {
+            warmup_search_times.push_back(search_time);
+        } else {
+            search_times.push_back(search_time);
+        }
         cout << " " << fixed << setprecision(3) << search_time << "s" << endl;
 
         // Calculate precision (last run only)
@@ -274,6 +284,7 @@ BenchmarkResult benchmark_cpu_hierarchical(
     }
 
     result.build_time = Stats(build_times);
+    result.search_time_cold = Stats(warmup_search_times);
     result.search_time = Stats(search_times);
     result.gpu_upload_time = Stats();
     result.total_time = result.build_time.mean + result.search_time.mean;
@@ -282,11 +293,12 @@ BenchmarkResult benchmark_cpu_hierarchical(
     result.gpu_memory_mb = 0;
 
     cout << "\nSummary:" << endl;
-    cout << "  Build time:    " << result.build_time.format() << "s" << endl;
-    cout << "  Search time:   " << result.search_time.format() << "s" << endl;
-    cout << "  Per-query:     " << fixed << setprecision(2) << (result.search_time.mean * 1e6 / queries.rows) << " µs" << endl;
-    cout << "  Throughput:    " << fixed << setprecision(1) << result.queries_per_sec << " queries/sec" << endl;
-    cout << "  Precision:     " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
+    cout << "  Build time:      " << result.build_time.format() << "s" << endl;
+    cout << "  Search (cold):   " << result.search_time_cold.format() << "s" << endl;
+    cout << "  Search (warm):   " << result.search_time.format() << "s" << endl;
+    cout << "  Per-query:       " << fixed << setprecision(2) << (result.search_time.mean * 1e6 / queries.rows) << " µs" << endl;
+    cout << "  Throughput:      " << fixed << setprecision(1) << result.queries_per_sec << " queries/sec" << endl;
+    cout << "  Precision:       " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
 
     return result;
 }
@@ -407,7 +419,7 @@ BenchmarkResult benchmark_cuda_hierarchical(
     result.implementation = "CUDA";
     result.algorithm = "Hierarchical";
 
-    vector<double> build_times, upload_times, search_times;
+    vector<double> build_times, upload_times, search_times, warmup_search_times;
 
     HierarchicalCUDAIndexParams params(
         config.branching,
@@ -448,11 +460,19 @@ BenchmarkResult benchmark_cuda_hierarchical(
         Matrix<size_t> indices(new size_t[queries.rows * config.k], queries.rows, config.k);
         Matrix<unsigned int> distances(new unsigned int[queries.rows * config.k], queries.rows, config.k);
 
-        cout << "  Searching (GPU)..." << flush;
+        if (is_warmup) {
+            cout << "  Searching (cold)..." << flush;
+        } else {
+            cout << "  Searching (warm)..." << flush;
+        }
         timer.reset();
         index.knnSearch(queries, indices, distances, config.k, SearchParams(config.checks));
         double search_time = timer.elapsed();
-        if (!is_warmup) search_times.push_back(search_time);
+        if (is_warmup) {
+            warmup_search_times.push_back(search_time);
+        } else {
+            search_times.push_back(search_time);
+        }
         cout << " " << fixed << setprecision(3) << search_time << "s" << endl;
 
         // Calculate precision (last run only)
@@ -467,6 +487,7 @@ BenchmarkResult benchmark_cuda_hierarchical(
 
     result.build_time = Stats(build_times);
     result.gpu_upload_time = Stats(upload_times);
+    result.search_time_cold = Stats(warmup_search_times);
     result.search_time = Stats(search_times);
     result.total_time = result.build_time.mean + result.gpu_upload_time.mean + result.search_time.mean;
     result.queries_per_sec = queries.rows / result.search_time.mean;
@@ -474,12 +495,13 @@ BenchmarkResult benchmark_cuda_hierarchical(
     result.gpu_memory_mb = (dataset.rows * dataset.cols + queries.rows * queries.cols + dataset.rows * 64) / (1024 * 1024);
 
     cout << "\nSummary:" << endl;
-    cout << "  Build time:    " << result.build_time.format() << "s" << endl;
-    cout << "  Upload time:   " << result.gpu_upload_time.format() << "s" << endl;
-    cout << "  Search time:   " << result.search_time.format() << "s" << endl;
-    cout << "  Per-query:     " << fixed << setprecision(2) << (result.search_time.mean * 1e6 / queries.rows) << " µs" << endl;
-    cout << "  Throughput:    " << fixed << setprecision(1) << result.queries_per_sec << " queries/sec" << endl;
-    cout << "  Precision:     " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
+    cout << "  Build time:      " << result.build_time.format() << "s" << endl;
+    cout << "  Upload time:     " << result.gpu_upload_time.format() << "s" << endl;
+    cout << "  Search (cold):   " << result.search_time_cold.format() << "s" << endl;
+    cout << "  Search (warm):   " << result.search_time.format() << "s" << endl;
+    cout << "  Per-query:       " << fixed << setprecision(2) << (result.search_time.mean * 1e6 / queries.rows) << " µs" << endl;
+    cout << "  Throughput:      " << fixed << setprecision(1) << result.queries_per_sec << " queries/sec" << endl;
+    cout << "  Precision:       " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
 
     return result;
 }
@@ -503,7 +525,7 @@ BenchmarkResult benchmark_cpu_kmeans(
     result.implementation = "CPU";
     result.algorithm = "K-Means";
 
-    vector<double> build_times, search_times;
+    vector<double> build_times, search_times, warmup_search_times;
 
     KMeansIndexParams params(
         config.branching,
@@ -536,11 +558,19 @@ BenchmarkResult benchmark_cpu_kmeans(
         Matrix<size_t> indices(new size_t[queries.rows * config.k], queries.rows, config.k);
         Matrix<float> distances(new float[queries.rows * config.k], queries.rows, config.k);
 
-        cout << "  Searching..." << flush;
+        if (is_warmup) {
+            cout << "  Searching (cold)..." << flush;
+        } else {
+            cout << "  Searching (warm)..." << flush;
+        }
         timer.reset();
         index.knnSearch(queries, indices, distances, config.k, SearchParams(config.checks));
         double search_time = timer.elapsed();
-        if (!is_warmup) search_times.push_back(search_time);
+        if (is_warmup) {
+            warmup_search_times.push_back(search_time);
+        } else {
+            search_times.push_back(search_time);
+        }
         cout << " " << fixed << setprecision(3) << search_time << "s" << endl;
 
         // Calculate precision (last run only)
@@ -554,6 +584,7 @@ BenchmarkResult benchmark_cpu_kmeans(
     }
 
     result.build_time = Stats(build_times);
+    result.search_time_cold = Stats(warmup_search_times);
     result.search_time = Stats(search_times);
     result.gpu_upload_time = Stats();
     result.total_time = result.build_time.mean + result.search_time.mean;
@@ -562,11 +593,12 @@ BenchmarkResult benchmark_cpu_kmeans(
     result.gpu_memory_mb = 0;
 
     cout << "\nSummary:" << endl;
-    cout << "  Build time:    " << result.build_time.format() << "s" << endl;
-    cout << "  Search time:   " << result.search_time.format() << "s" << endl;
-    cout << "  Per-query:     " << fixed << setprecision(2) << (result.search_time.mean * 1e6 / queries.rows) << " µs" << endl;
-    cout << "  Throughput:    " << fixed << setprecision(1) << result.queries_per_sec << " queries/sec" << endl;
-    cout << "  Precision:     " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
+    cout << "  Build time:      " << result.build_time.format() << "s" << endl;
+    cout << "  Search (cold):   " << result.search_time_cold.format() << "s" << endl;
+    cout << "  Search (warm):   " << result.search_time.format() << "s" << endl;
+    cout << "  Per-query:       " << fixed << setprecision(2) << (result.search_time.mean * 1e6 / queries.rows) << " µs" << endl;
+    cout << "  Throughput:      " << fixed << setprecision(1) << result.queries_per_sec << " queries/sec" << endl;
+    cout << "  Precision:       " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
 
     return result;
 }
@@ -687,7 +719,7 @@ BenchmarkResult benchmark_cuda_kmeans(
     result.implementation = "CUDA";
     result.algorithm = "K-Means";
 
-    vector<double> build_times, upload_times, search_times;
+    vector<double> build_times, upload_times, search_times, warmup_search_times;
 
     KMeansCUDAIndexParams params(
         config.branching,
@@ -728,11 +760,19 @@ BenchmarkResult benchmark_cuda_kmeans(
         Matrix<size_t> indices(new size_t[queries.rows * config.k], queries.rows, config.k);
         Matrix<float> distances(new float[queries.rows * config.k], queries.rows, config.k);
 
-        cout << "  Searching (GPU)..." << flush;
+        if (is_warmup) {
+            cout << "  Searching (cold)..." << flush;
+        } else {
+            cout << "  Searching (warm)..." << flush;
+        }
         timer.reset();
         index.knnSearch(queries, indices, distances, config.k, SearchParams(config.checks));
         double search_time = timer.elapsed();
-        if (!is_warmup) search_times.push_back(search_time);
+        if (is_warmup) {
+            warmup_search_times.push_back(search_time);
+        } else {
+            search_times.push_back(search_time);
+        }
         cout << " " << fixed << setprecision(3) << search_time << "s" << endl;
 
         // Calculate precision (last run only)
@@ -747,6 +787,7 @@ BenchmarkResult benchmark_cuda_kmeans(
 
     result.build_time = Stats(build_times);
     result.gpu_upload_time = Stats(upload_times);
+    result.search_time_cold = Stats(warmup_search_times);
     result.search_time = Stats(search_times);
     result.total_time = result.build_time.mean + result.gpu_upload_time.mean + result.search_time.mean;
     result.queries_per_sec = queries.rows / result.search_time.mean;
@@ -754,12 +795,13 @@ BenchmarkResult benchmark_cuda_kmeans(
     result.gpu_memory_mb = result.cpu_memory_mb * 2;  // Estimate
 
     cout << "\nSummary:" << endl;
-    cout << "  Build time:    " << result.build_time.format() << "s" << endl;
-    cout << "  Upload time:   " << result.gpu_upload_time.format() << "s" << endl;
-    cout << "  Search time:   " << result.search_time.format() << "s" << endl;
-    cout << "  Per-query:     " << fixed << setprecision(2) << (result.search_time.mean * 1e6 / queries.rows) << " µs" << endl;
-    cout << "  Throughput:    " << fixed << setprecision(1) << result.queries_per_sec << " queries/sec" << endl;
-    cout << "  Precision:     " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
+    cout << "  Build time:      " << result.build_time.format() << "s" << endl;
+    cout << "  Upload time:     " << result.gpu_upload_time.format() << "s" << endl;
+    cout << "  Search (cold):   " << result.search_time_cold.format() << "s" << endl;
+    cout << "  Search (warm):   " << result.search_time.format() << "s" << endl;
+    cout << "  Per-query:       " << fixed << setprecision(2) << (result.search_time.mean * 1e6 / queries.rows) << " µs" << endl;
+    cout << "  Throughput:      " << fixed << setprecision(1) << result.queries_per_sec << " queries/sec" << endl;
+    cout << "  Precision:       " << fixed << setprecision(2) << (result.precision * 100.0) << "%" << endl;
 
     return result;
 }
@@ -770,7 +812,8 @@ BenchmarkResult benchmark_cuda_kmeans(
 // ============================================================================
 
 void export_results_csv(const vector<BenchmarkResult>& results,
-                        const string& filename)
+                        const string& filename,
+                        double load_time = 0)
 {
     ofstream csv(filename);
     if (!csv.is_open()) {
@@ -778,15 +821,18 @@ void export_results_csv(const vector<BenchmarkResult>& results,
         return;
     }
 
-    csv << "Implementation,Algorithm,BuildTime(s),BuildStd,UploadTime(s),UploadStd,SearchTime(s),SearchStd,TotalTime(s),Precision(%),QueriesPerSec,CPUMemory(MB),GPUMemory(MB)" << endl;
+    csv << "Implementation,Algorithm,LoadTime(s),BuildTime(s),BuildStd,UploadTime(s),UploadStd,SearchCold(s),SearchColdStd,SearchWarm(s),SearchWarmStd,TotalTime(s),Precision(%),QueriesPerSec,CPUMemory(MB),GPUMemory(MB)" << endl;
 
     for (const auto& r : results) {
         csv << r.implementation << ","
             << r.algorithm << ","
+            << fixed << setprecision(3) << load_time << ","
             << fixed << setprecision(3) << r.build_time.mean << ","
             << fixed << setprecision(3) << r.build_time.stddev << ","
             << fixed << setprecision(3) << r.gpu_upload_time.mean << ","
             << fixed << setprecision(3) << r.gpu_upload_time.stddev << ","
+            << fixed << setprecision(3) << r.search_time_cold.mean << ","
+            << fixed << setprecision(3) << r.search_time_cold.stddev << ","
             << fixed << setprecision(3) << r.search_time.mean << ","
             << fixed << setprecision(3) << r.search_time.stddev << ","
             << fixed << setprecision(3) << r.total_time << ","
@@ -800,31 +846,36 @@ void export_results_csv(const vector<BenchmarkResult>& results,
     cout << "\nCSV results saved to: " << filename << endl;
 }
 
-void print_summary_table(const vector<BenchmarkResult>& results)
+void print_summary_table(const vector<BenchmarkResult>& results, double load_time = 0)
 {
     cout << "\n" << string(70, '=') << endl;
     cout << "BENCHMARK RESULTS SUMMARY" << endl;
     cout << string(70, '=') << endl;
 
-    // Print table header
+    // Print load time once (shared across all implementations)
+    if (load_time > 0) {
+        cout << "\nDataset load time: " << fixed << setprecision(3) << load_time << "s" << endl;
+    }
+
+    // Print table header with phase breakdown
     cout << endl;
     cout << left << setw(12) << "Impl"
          << setw(14) << "Algorithm"
          << right << setw(12) << "Build(s)"
          << setw(12) << "Upload(s)"
-         << setw(12) << "Search(s)"
-         << setw(12) << "Total(s)"
+         << setw(14) << "Search(cold)"
+         << setw(14) << "Search(warm)"
          << setw(10) << "Prec(%)"
          << setw(10) << "Q/sec" << endl;
-    cout << string(92, '-') << endl;
+    cout << string(106, '-') << endl;
 
     for (const auto& r : results) {
         cout << left << setw(12) << r.implementation
              << setw(14) << r.algorithm
              << right << setw(12) << r.build_time.format()
              << setw(12) << r.gpu_upload_time.format()
-             << setw(12) << r.search_time.format()
-             << setw(12) << fixed << setprecision(2) << r.total_time
+             << setw(14) << r.search_time_cold.format()
+             << setw(14) << r.search_time.format()
              << setw(10) << fixed << setprecision(1) << (r.precision * 100.0)
              << setw(10) << fixed << setprecision(0) << r.queries_per_sec << endl;
     }
@@ -840,6 +891,19 @@ void print_summary_table(const vector<BenchmarkResult>& results)
             double speedup = cpu_search / results[i].search_time.mean;
             cout << results[i].implementation << " " << results[i].algorithm << ": "
                  << fixed << setprecision(2) << speedup << "x faster" << endl;
+        }
+    }
+
+    // Cold vs Warm analysis
+    cout << "\n" << string(70, '-') << endl;
+    cout << "COLD vs WARM SEARCH ANALYSIS" << endl;
+    cout << string(70, '-') << endl;
+
+    for (const auto& r : results) {
+        if (r.search_time_cold.mean > 0 && r.search_time.mean > 0) {
+            double ratio = r.search_time_cold.mean / r.search_time.mean;
+            cout << r.implementation << " " << r.algorithm << ": cold/warm = "
+                 << fixed << setprecision(2) << ratio << "x" << endl;
         }
     }
 }
@@ -954,6 +1018,8 @@ int main(int argc, char** argv)
 
     vector<BenchmarkResult> results;
 
+    double dataset_load_time = 0;  // Track dataset load time
+
     if (config.run_kmeans) {
         // ============================================
         // K-Means mode: Load float data
@@ -962,6 +1028,7 @@ int main(int argc, char** argv)
         Matrix<float> dataset;
         Matrix<float> queries;
 
+        Timer load_timer;
         try {
             load_from_file(dataset, config.dataset_file, "dataset");
             load_from_file(queries, config.dataset_file, "query");
@@ -970,8 +1037,9 @@ int main(int argc, char** argv)
             cerr << "\nError loading dataset: " << e.what() << endl;
             return 1;
         }
+        dataset_load_time = load_timer.elapsed();
 
-        cout << " done" << endl;
+        cout << " done (" << fixed << setprecision(3) << dataset_load_time << "s)" << endl;
         cout << "  Index:  " << dataset.rows << " x " << dataset.cols << " floats" << endl;
         cout << "  Query:  " << queries.rows << " x " << queries.cols << " floats" << endl;
 
@@ -1026,6 +1094,7 @@ int main(int argc, char** argv)
         Matrix<unsigned char> dataset;
         Matrix<unsigned char> queries;
 
+        Timer load_timer;
         try {
             load_from_file(dataset, config.dataset_file, "dataset");
             load_from_file(queries, config.dataset_file, "query");
@@ -1034,8 +1103,9 @@ int main(int argc, char** argv)
             cerr << "\nError loading dataset: " << e.what() << endl;
             return 1;
         }
+        dataset_load_time = load_timer.elapsed();
 
-        cout << " done" << endl;
+        cout << " done (" << fixed << setprecision(3) << dataset_load_time << "s)" << endl;
         cout << "  Index:  " << dataset.rows << " x " << dataset.cols << " bytes" << endl;
         cout << "  Query:  " << queries.rows << " x " << queries.cols << " bytes" << endl;
 
@@ -1084,12 +1154,12 @@ int main(int argc, char** argv)
     }
 
     // Print summary
-    print_summary_table(results);
+    print_summary_table(results, dataset_load_time);
 
     // Export results
     string csv_file = config.output_prefix + "_" +
                       (config.run_kmeans ? "kmeans" : "hierarchical") + ".csv";
-    export_results_csv(results, csv_file);
+    export_results_csv(results, csv_file, dataset_load_time);
 
     cout << "\nBenchmark complete!" << endl;
 
