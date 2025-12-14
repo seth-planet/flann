@@ -44,7 +44,7 @@
 #include "flann/algorithms/hierarchical_clustering_index.h"
 #include "flann/algorithms/cuda/cuda_utils.h"
 #include "flann/algorithms/cuda/nn_cuda_index.h"
-#include "flann/algorithms/cuda/kmeans_node_gpu.h"
+// Note: KMeansNodeGPU no longer needed - pivot_index stored in interleaved node_index
 #include "flann/util/gpu_saving.h"
 
 namespace flann {
@@ -59,8 +59,7 @@ namespace cuda {
 bool launch_hierarchical_search_cooperative(
     const unsigned char* dataset,
     const unsigned char* queries,
-    const KMeansNodeGPU* tree_nodes,
-    const int* device_node_index,
+    const int* device_node_index,  // Interleaved [pivot, child_ptr] pairs
     int* result_indices,
     int* result_distances,
     size_t num_queries,
@@ -146,9 +145,9 @@ public:
           gpu_initialized_(false),
           gpu_search_ready_(false),
           gpu_num_trees_(0),
-          gpu_nodes_(),
+          gpu_num_nodes_(0),
           gpu_dataset_(),
-          gpu_node_index_()          // CRITICAL FIX: Initialize nodeIndex buffer
+          gpu_node_index_()
     {
     }
 
@@ -167,9 +166,9 @@ public:
           gpu_initialized_(false),
           gpu_search_ready_(false),
           gpu_num_trees_(0),
-          gpu_nodes_(),
+          gpu_num_nodes_(0),
           gpu_dataset_(),
-          gpu_node_index_()          // CRITICAL FIX: Initialize nodeIndex buffer
+          gpu_node_index_()
     {
     }
 
@@ -186,9 +185,9 @@ public:
           gpu_initialized_(false),
           gpu_search_ready_(false),
           gpu_num_trees_(0),
-          gpu_nodes_(),              // Explicit default construction
-          gpu_dataset_(),            // CUDABuffer starts empty (ptr_ = nullptr)
-          gpu_node_index_()          // CRITICAL FIX: Initialize nodeIndex buffer
+          gpu_num_nodes_(0),
+          gpu_dataset_(),
+          gpu_node_index_()
     {
         // GPU buffers start empty - user must call buildCUDAKnnSearch()
     }
@@ -205,9 +204,9 @@ public:
           gpu_initialized_(false),
           gpu_search_ready_(false),
           gpu_num_trees_(0),
-          gpu_nodes_(),              // Explicit default construction
-          gpu_dataset_(),            // CUDABuffer starts empty (ptr_ = nullptr)
-          gpu_node_index_()          // CRITICAL FIX: Initialize nodeIndex buffer
+          gpu_num_nodes_(0),
+          gpu_dataset_(),
+          gpu_node_index_()
     {
         // GPU buffers start empty - user must call buildCUDAKnnSearch()
     }
@@ -304,18 +303,16 @@ public:
             warmup_queries.upload(dummy_query.data(), padded_bytes);
 
             // Launch kernel with 1 query to trigger JIT compilation
-            int num_nodes = gpu_nodes_.count();
             bool success = launch_hierarchical_search_cooperative(
                 reinterpret_cast<const unsigned char*>(gpu_dataset_.get()),
                 reinterpret_cast<const unsigned char*>(warmup_queries.get()),
-                gpu_nodes_.get(),  // Tree nodes for pivot_index lookup
-                gpu_node_index_.get(),
+                gpu_node_index_.get(),  // Interleaved [pivot, child_ptr] array
                 warmup_indices.get(),
                 warmup_dists.get(),
                 1,                     // 1 query for warmup
                 padded_bytes,
                 this->veclen_,
-                num_nodes,
+                gpu_num_nodes_,
                 knn,
                 gpu_num_trees_,
                 this->branching_
@@ -390,7 +387,6 @@ public:
 
         // Get padded size for calculation
         int padded_bytes = 4 * ((this->veclen_ + 3) / 4);
-        int num_nodes = gpu_nodes_.count();
 
         // Build GPU header with all metadata
         GPUIndexHeader header;
@@ -399,7 +395,7 @@ public:
         header.h.rows = this->size_;
         header.h.cols = this->veclen_;
         header.h.padded_veclen = padded_bytes;
-        header.h.num_nodes = num_nodes;
+        header.h.num_nodes = gpu_num_nodes_;
         header.h.node_index_size = gpu_node_index_.count();
         header.h.leaf_count = 0;  // Not used for hierarchical
         header.h.branching = this->branching_;
@@ -410,19 +406,16 @@ public:
         sa & header;
 
         // Download and save GPU arrays
+        // NOTE: No nodes array - pivot_index is stored interleaved in node_index
         // NOTE: pivots NOT saved - they're looked up from dataset via pivot_index
-        std::vector<KMeansNodeGPU> nodes_host(num_nodes);
         std::vector<int> node_index_host(header.h.node_index_size);
         std::vector<ElementType> dataset_host(this->size_ * padded_bytes);
 
-        gpu_nodes_.download(nodes_host.data(), num_nodes);
         gpu_node_index_.download(node_index_host.data(), header.h.node_index_size);
         gpu_dataset_.download(dataset_host.data(), this->size_ * padded_bytes);
 
-        // Serialize arrays (pivots not stored - accessed via pivot_index in dataset)
-        sa & serialization::make_binary_object(
-            nodes_host.data(),
-            num_nodes * sizeof(KMeansNodeGPU));
+        // Serialize arrays
+        // node_index contains interleaved [pivot, child_ptr] pairs + leaf data
         sa & serialization::make_binary_object(
             node_index_host.data(),
             header.h.node_index_size * sizeof(int));
@@ -487,9 +480,9 @@ public:
         std::swap(gpu_initialized_, other.gpu_initialized_);
         std::swap(gpu_search_ready_, other.gpu_search_ready_);
         std::swap(gpu_num_trees_, other.gpu_num_trees_);
+        std::swap(gpu_num_nodes_, other.gpu_num_nodes_);
 
         // Swap GPU buffers using std::swap (works with move semantics)
-        std::swap(gpu_nodes_, other.gpu_nodes_);
         std::swap(gpu_dataset_, other.gpu_dataset_);
         std::swap(gpu_node_index_, other.gpu_node_index_);
     }
@@ -583,7 +576,6 @@ protected:
     void freeGPUMemory()
     {
         // Move-assign empty buffers to trigger RAII cleanup
-        gpu_nodes_ = CUDABuffer<KMeansNodeGPU>();
         gpu_dataset_ = CUDABuffer<ElementType>();
         gpu_node_index_ = CUDABuffer<int>();
 
@@ -618,21 +610,18 @@ protected:
         this->veclen_ = header.h.cols;
         this->size_at_build_ = header.h.rows;
         int padded_bytes = header.h.padded_veclen;
-        int num_nodes = header.h.num_nodes;
+        gpu_num_nodes_ = header.h.num_nodes;
         gpu_num_trees_ = header.h.trees;
         this->branching_ = header.h.branching;
         this->leaf_max_size_ = header.h.leaf_max_size;
         this->centers_init_ = header.h.centers_init;
 
         // Allocate and load arrays from file
+        // NOTE: No nodes array - pivot_index is stored interleaved in node_index
         // NOTE: pivots NOT loaded - they're looked up from dataset via pivot_index
-        std::vector<KMeansNodeGPU> nodes_host(num_nodes);
         std::vector<int> node_index_host(header.h.node_index_size);
         std::vector<ElementType> dataset_host(this->size_ * padded_bytes);
 
-        la & serialization::make_binary_object(
-            nodes_host.data(),
-            num_nodes * sizeof(KMeansNodeGPU));
         la & serialization::make_binary_object(
             node_index_host.data(),
             header.h.node_index_size * sizeof(int));
@@ -640,12 +629,10 @@ protected:
             dataset_host.data(),
             this->size_ * padded_bytes * sizeof(ElementType));
 
-        // Upload directly to GPU (no pivots - accessed via pivot_index in dataset)
-        gpu_nodes_.resize(num_nodes);
+        // Upload directly to GPU
         gpu_node_index_.resize(header.h.node_index_size);
         gpu_dataset_.resize(this->size_ * padded_bytes);
 
-        gpu_nodes_.upload(nodes_host.data(), num_nodes);
         gpu_node_index_.upload(node_index_host.data(), header.h.node_index_size);
         gpu_dataset_.upload(dataset_host.data(), this->size_ * padded_bytes);
 
@@ -702,14 +689,15 @@ protected:
      *
      * **Flattening strategy (breadth-first):**
      * 1. Count nodes in all trees
-     * 2. Allocate flat arrays for nodes, pivots, dataset
+     * 2. Allocate flat arrays for nodes, dataset
      * 3. Traverse trees breadth-first, copying data
      * 4. Upload to GPU with cudaMemcpy
      *
-     * **Memory layout:**
-     * - Nodes: KMeansNodeGPU structs (pivot_index, child_start, child_count, etc.)
-     * - Pivots: Packed binary descriptors (padded to multiples of 16 bytes)
-     * - Dataset: Packed binary descriptors (padded to multiples of 16 bytes)
+     * **Memory layout (interleaved for cache locality):**
+     * - node_index: [pivot_0, child_ptr_0, pivot_1, child_ptr_1, ..., leaf_data...]
+     *   - Even indices (i*2): pivot_index for node i
+     *   - Odd indices (i*2+1): child_ptr for node i (child_start or leaf_data_ptr)
+     * - Dataset: Packed binary descriptors (padded to multiples of 4 bytes)
      *
      * @throws FLANNException on CUDA errors
      */
@@ -739,14 +727,24 @@ protected:
             throw FLANNException("Cannot upload empty tree to GPU");
         }
 
+        // Store for later use (kernel needs this)
+        gpu_num_nodes_ = num_nodes;
+
         // CRITICAL FIX: Pad to multiple of 4 to match OpenCL exactly
         // OpenCL uses: n_veclen = 4*((veclen+3)/4)
         // Must use identical formula for comparison
         int padded_veclen = 4 * ((this->veclen_ + 3) / 4);
 
         // Allocate host memory for flattening
-        std::vector<KMeansNodeGPU> nodes_host(num_nodes);
-        // NOTE: pivots NOT stored - looked up from dataset via pivot_index
+        // Use temporary struct to collect node info before building interleaved array
+        struct NodeInfo {
+            int pivot_index;
+            int child_start;  // -1 for leaves (will be replaced with leaf_data_ptr)
+            int child_count;  // For leaves
+        };
+        std::vector<NodeInfo> nodes_info(num_nodes);
+
+        // NOTE: pivots NOT stored separately - looked up from dataset via pivot_index
         std::vector<ElementType> dataset_host(this->size_ * padded_veclen, 0);
         std::vector<int> dataset_indices;  // Flattened leaf indices
 
@@ -797,19 +795,14 @@ protected:
             int node_slot = node_id_queue.front();
             node_id_queue.pop();
 
-            KMeansNodeGPU& gpu_node = nodes_host[node_slot];
-
-            // NOTE: pivots NOT copied - looked up from dataset via pivot_index
+            NodeInfo& info = nodes_info[node_slot];
 
             if (node->childs.empty()) {
                 // Leaf node
                 int leaf_offset = dataset_indices.size();
-                gpu_node.child_start = -(leaf_offset + 1);
-                // Preserve pivot_index for dataset lookup (NOT -1!)
-                gpu_node.pivot_index = (node->pivot_index != SIZE_MAX)
-                                     ? static_cast<int>(node->pivot_index) : -1;
-                gpu_node.radius = 0.0f;
-                gpu_node.variance = 0.0f;
+                info.child_start = -1;  // Mark as leaf, will set actual ptr later
+                info.pivot_index = (node->pivot_index != SIZE_MAX)
+                                 ? static_cast<int>(node->pivot_index) : -1;
 
                 for (size_t i = 0; i < node->points.size(); ++i) {
                     size_t index = node->points[i].index;
@@ -818,17 +811,13 @@ protected:
                     }
                 }
 
-                gpu_node.child_count = static_cast<uint16_t>(
-                    dataset_indices.size() - leaf_offset
-                );
+                info.child_count = dataset_indices.size() - leaf_offset;
             } else {
                 // Parent node
-                gpu_node.pivot_index = (node->pivot_index != SIZE_MAX) ?
-                                      static_cast<int>(node->pivot_index) : -1;
-                gpu_node.child_start = next_available_slot;  // Children start here
-                gpu_node.child_count = static_cast<uint16_t>(node->childs.size());
-                gpu_node.radius = 0.0f;
-                gpu_node.variance = 0.0f;
+                info.pivot_index = (node->pivot_index != SIZE_MAX) ?
+                                  static_cast<int>(node->pivot_index) : -1;
+                info.child_start = next_available_slot;  // Children start here
+                info.child_count = node->childs.size();
 
                 // Enqueue children at next available slots
                 for (size_t i = 0; i < node->childs.size(); ++i) {
@@ -839,30 +828,34 @@ protected:
         }
 
         // ========================================================================
-        // Hybrid Array Construction - Matching OpenCL Exactly
+        // Interleaved Hybrid Array Construction
         // ========================================================================
-        // Build hybrid flat array containing both pointers AND embedded leaf data
-        // Structure: [node_pointers...][leaf_region_1: count, idx...][leaf_region_2...]
+        // Build interleaved array: [pivot_0, child_ptr_0, pivot_1, child_ptr_1, ..., leaf_data...]
+        // This provides cache locality: pivot and child_ptr for same node are adjacent
 
-        // Calculate hybrid array size
+        // Calculate hybrid array size (interleaved section + leaf data)
         int num_leaf_indices = dataset_indices.size();
-        int hybrid_size = num_nodes + num_leaf_indices + num_leaves;  // pointers + data + counts
+        int interleaved_section_size = num_nodes * 2;  // 2 entries per node (pivot + child_ptr)
+        int hybrid_size = interleaved_section_size + num_leaf_indices + num_leaves;  // + counts
 
         std::vector<int> hybrid_node_index(hybrid_size);
-        int next_data_ptr = num_nodes;  // Data section starts after pointer section
+        int next_data_ptr = interleaved_section_size;  // Leaf data starts after interleaved section
 
-        // Build hybrid array using already-constructed nodes_host and dataset_indices
+        // Build interleaved array
         int dataset_idx_offset = 0;  // Track position in dataset_indices
 
         for (int i = 0; i < num_nodes; ++i) {
-            const KMeansNodeGPU& node = nodes_host[i];
+            const NodeInfo& info = nodes_info[i];
 
-            if (node.child_start < 0) {
-                // LEAF: Store pointer to leaf data region in hybrid array
-                hybrid_node_index[i] = next_data_ptr;
+            // Always store pivot at even index
+            hybrid_node_index[i * 2] = info.pivot_index;
+
+            if (info.child_start < 0) {
+                // LEAF: Store pointer to leaf data region at odd index
+                hybrid_node_index[i * 2 + 1] = next_data_ptr;
 
                 // Write leaf data: [count, idx1, idx2, ...]
-                int leaf_count = node.child_count;
+                int leaf_count = info.child_count;
                 hybrid_node_index[next_data_ptr++] = leaf_count;  // Count first
 
                 // Copy leaf indices from dataset_indices
@@ -870,20 +863,18 @@ protected:
                     hybrid_node_index[next_data_ptr++] = dataset_indices[dataset_idx_offset++];
                 }
             } else {
-                // PARENT: Store child_start pointer (same as CUDA tree_nodes)
-                hybrid_node_index[i] = node.child_start;
+                // PARENT: Store child_start pointer at odd index
+                hybrid_node_index[i * 2 + 1] = info.child_start;
             }
         }
 
-        // Allocate and upload GPU buffers using .resize()
-        // NOTE: no pivots buffer - pivots accessed via pivot_index in dataset
-        gpu_nodes_.resize(num_nodes);
+        // Allocate and upload GPU buffers
+        // NOTE: No gpu_nodes_ - pivot_index is now in interleaved node_index
         gpu_dataset_.resize(this->size_ * padded_veclen);
-        gpu_node_index_.resize(hybrid_size);  // CRITICAL: Hybrid array with embedded leaf data
+        gpu_node_index_.resize(hybrid_size);  // Interleaved [pivot, child_ptr] + leaf data
 
-        gpu_nodes_.upload(nodes_host.data(), num_nodes);
         gpu_dataset_.upload(dataset_host.data(), this->size_ * padded_veclen);
-        gpu_node_index_.upload(hybrid_node_index.data(), hybrid_size);  // CRITICAL: Upload hybrid array
+        gpu_node_index_.upload(hybrid_node_index.data(), hybrid_size);
 
         gpu_initialized_ = true;
     }
@@ -995,19 +986,16 @@ protected:
         gpu_queries.upload(padded_queries.data(), num_queries * padded_bytes);
 
         // Run cooperative kernel
-        int num_nodes = gpu_nodes_.count();
-
         bool success = launch_hierarchical_search_cooperative(
             reinterpret_cast<const unsigned char*>(gpu_dataset_.get()),
             reinterpret_cast<const unsigned char*>(gpu_queries.get()),
-            gpu_nodes_.get(),  // Tree nodes for pivot_index lookup into dataset
-            gpu_node_index_.get(),  // CRITICAL: Pass nodeIndex indirection array
+            gpu_node_index_.get(),  // Interleaved [pivot, child_ptr] + leaf data
             gpu_indices.get(),
             gpu_dists.get(),
             num_queries,
             padded_bytes,      // For array indexing (data stored with padding)
             this->veclen_,     // For Hamming distance (actual descriptor length)
-            num_nodes,
+            gpu_num_nodes_,    // Number of tree nodes
             knn,               // Number of nearest neighbors
             gpu_num_trees_,    // Number of trees (roots at indices 0..num_trees-1)
             this->branching_   // Branching factor (tree N's children start at N*branching)
@@ -1052,12 +1040,13 @@ private:
     mutable std::atomic<bool> search_in_progress_{false};
 #endif
     int gpu_num_trees_;         ///< Number of trees (tree roots are nodes 0..num_trees-1)
+    int gpu_num_nodes_;         ///< Number of tree nodes (needed for kernel)
 
     // GPU buffers (RAII wrappers for automatic cleanup)
     // NOTE: No gpu_pivots_ - pivots accessed via pivot_index in dataset (eliminates duplication)
-    mutable CUDABuffer<KMeansNodeGPU> gpu_nodes_;      ///< Flattened node array (includes pivot_index)
+    // NOTE: No gpu_nodes_ - pivot_index and child_ptr are stored interleaved in gpu_node_index_
     mutable CUDABuffer<ElementType> gpu_dataset_;      ///< Dataset descriptors (padded)
-    mutable CUDABuffer<int> gpu_node_index_;           ///< Indirection array matching OpenCL (pointers not indices)
+    mutable CUDABuffer<int> gpu_node_index_;           ///< Interleaved [pivot, child_ptr] pairs + leaf data
 
 };
 

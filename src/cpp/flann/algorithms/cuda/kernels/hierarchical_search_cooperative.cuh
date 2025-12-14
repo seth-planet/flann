@@ -4,7 +4,7 @@
 #include <cstdio>  // For fprintf error reporting
 #include "bitonic_sort.cuh"
 #include "distance_kernels.cuh"
-#include "../kmeans_node_gpu.h"
+// Note: KMeansNodeGPU no longer needed - pivot_index is stored in interleaved node_index array
 
 namespace flann {
 namespace cuda {
@@ -64,8 +64,7 @@ __device__ inline void init_local_heap(
  * Multiple threads cooperate to explore all children of parent nodes
  * currently in the heap.
  *
- * @param device_node_index Hybrid node index array (nodeIndex)
- * @param tree_nodes Flat array of tree nodes (for pivot_index lookup)
+ * @param device_node_index Hybrid node index array with interleaved [pivot, child_ptr] pairs
  * @param dataset Full dataset (pivots are looked up via pivot_index)
  * @param query Query descriptor
  * @param heap_dists Shared heap distances
@@ -79,7 +78,6 @@ __device__ inline void init_local_heap(
  */
 __device__ inline void find_new_node_dist(
     const int* __restrict__ device_node_index,
-    const KMeansNodeGPU* __restrict__ tree_nodes,
     const unsigned char* __restrict__ dataset,
     const unsigned char* __restrict__ query,
     int* heap_dists,
@@ -128,14 +126,15 @@ __device__ inline void find_new_node_dist(
         int i = local_size + local_id;
 
         // Compute distance to pivot via pivot_index lookup into dataset
-        // This eliminates redundant pivot storage (pivots ARE dataset rows)
-        int pivot_idx = tree_nodes[node_id].pivot_index;
+        // Interleaved layout: [pivot_0, child_ptr_0, pivot_1, child_ptr_1, ...]
+        // pivot_index at even indices, child_ptr at odd indices
+        int pivot_idx = device_node_index[node_id * 2];  // Even index = pivot
         const unsigned char* child_pivot = dataset + pivot_idx * padded_bytes;
         heap_dists[i] = compute_hamming_distance(query, child_pivot, actual_bytes);
 
-        // Store dereferenced node index
+        // Store dereferenced node index (child_ptr at odd index)
         // OpenCL: heapId[i] = nodeIndex[nodeId];
-        heap_ids[i] = device_node_index[node_id];
+        heap_ids[i] = device_node_index[node_id * 2 + 1];  // Odd index = child_ptr
     }
 }
 
@@ -148,8 +147,7 @@ __device__ inline void find_new_node_dist(
  * All threads cooperate to explore multiple parent nodes in parallel.
  * Continues until heap contains only leaf pointers.
  *
- * @param device_node_index Hybrid node index array
- * @param tree_nodes Flat array of tree nodes (for pivot_index lookup)
+ * @param device_node_index Hybrid node index array with interleaved [pivot, child_ptr] pairs
  * @param dataset Full dataset (pivots are looked up via pivot_index)
  * @param query Query descriptor
  * @param heap_dists Shared heap distances
@@ -165,7 +163,6 @@ __device__ inline void find_new_node_dist(
  */
 __device__ inline void find_nodes_cooperative(
     const int* __restrict__ device_node_index,
-    const KMeansNodeGPU* __restrict__ tree_nodes,
     const unsigned char* __restrict__ dataset,
     const unsigned char* __restrict__ query,
     int* heap_dists,
@@ -196,7 +193,7 @@ __device__ inline void find_nodes_cooperative(
     // Find the closest children to the root
     // OpenCL: findNewNodeDist(...);
     find_new_node_dist(
-        device_node_index, tree_nodes, dataset, query,
+        device_node_index, dataset, query,
         heap_dists, heap_ids,
         num_nodes, branching,
         local_id, local_size,
@@ -213,7 +210,7 @@ __device__ inline void find_nodes_cooperative(
         // Use the closest parent nodes to discover additional nodes
         // OpenCL: findNewNodeDist(...);
         find_new_node_dist(
-            device_node_index, tree_nodes, dataset, query,
+            device_node_index, dataset, query,
             heap_dists, heap_ids,
             num_nodes, branching,
             local_id, local_size,
@@ -435,11 +432,10 @@ __device__ inline void store_results(
  *
  * Kernel launch configuration:
  * - Grid: num_queries (one block per query)
- * - Block: 128 threads (cooperative workgroup)
- * - Shared memory: (128 * 2 * 2 + 2) * sizeof(int)
+ * - Block: 256 threads (cooperative workgroup)
+ * - Shared memory: (256 * 2 * 2 + 2) * sizeof(int)
  *
- * @param device_node_index Hybrid node index array
- * @param tree_nodes Flat array of tree nodes (for pivot_index lookup)
+ * @param device_node_index Hybrid node index array with interleaved [pivot, child_ptr] pairs
  * @param dataset Full dataset of descriptors (pivots looked up via pivot_index)
  * @param queries Query descriptors
  * @param result_indices Output k-NN indices [num_queries x K]
@@ -454,7 +450,6 @@ __device__ inline void store_results(
 template<int K>
 __global__ void hierarchical_search_cooperative_kernel(
     const int* __restrict__ device_node_index,
-    const KMeansNodeGPU* __restrict__ tree_nodes,
     const unsigned char* __restrict__ dataset,
     const unsigned char* __restrict__ queries,
     int* __restrict__ result_indices,
@@ -470,7 +465,7 @@ __global__ void hierarchical_search_cooperative_kernel(
     // threadIdx.x = local thread ID within block
     int query_id = blockIdx.x;
     int local_id = threadIdx.x;
-    int local_size = blockDim.x;  // Should be 128
+    int local_size = blockDim.x;  // Should be 256
 
     if (query_id >= num_queries) return;
 
@@ -487,7 +482,7 @@ __global__ void hierarchical_search_cooperative_kernel(
     // Phase 1: Find nodes (explore tree until heap contains only leaves)
     // OpenCL: findNodes(...)
     find_nodes_cooperative(
-        device_node_index, tree_nodes, dataset, query,
+        device_node_index, dataset, query,
         heap_dists, heap_ids, done_flag,
         num_nodes, num_trees, branching,
         local_id, local_size,
@@ -521,8 +516,7 @@ __global__ void hierarchical_search_cooperative_kernel(
  *
  * @param dataset Dataset descriptors (GPU)
  * @param queries Query descriptors (GPU)
- * @param tree_nodes Tree nodes (GPU) - for pivot_index lookup into dataset
- * @param device_node_index Hybrid node index array (GPU)
+ * @param device_node_index Hybrid node index array with interleaved [pivot, child_ptr] pairs (GPU)
  * @param result_indices Output indices (GPU)
  * @param result_distances Output distances (GPU)
  * @param num_queries Number of queries
@@ -537,7 +531,6 @@ __global__ void hierarchical_search_cooperative_kernel(
 bool launch_hierarchical_search_cooperative(
     const unsigned char* dataset,
     const unsigned char* queries,
-    const KMeansNodeGPU* tree_nodes,
     const int* device_node_index,
     int* result_indices,
     int* result_distances,
@@ -569,100 +562,100 @@ bool launch_hierarchical_search_cooperative(
     // Tier 4: Non-aligned (kept for API compatibility)
     if (k == 1) {
         hierarchical_search_cooperative_kernel<1><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 2) {
         hierarchical_search_cooperative_kernel<2><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 3) {
         hierarchical_search_cooperative_kernel<3><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     // Tier 3: Multiple of 4 (vectorized)
     } else if (k == 4) {
         hierarchical_search_cooperative_kernel<4><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 5) {
         hierarchical_search_cooperative_kernel<5><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     // Tier 2: Multiple of 8 (good vectorization)
     } else if (k == 8) {
         hierarchical_search_cooperative_kernel<8><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 10) {
         hierarchical_search_cooperative_kernel<10><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 12) {
         hierarchical_search_cooperative_kernel<12><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     // Tier 1: Multiple of 16 (optimal - cache-aligned + vectorized)
     } else if (k == 16) {
         hierarchical_search_cooperative_kernel<16><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 20) {
         hierarchical_search_cooperative_kernel<20><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 24) {
         hierarchical_search_cooperative_kernel<24><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 32) {
         hierarchical_search_cooperative_kernel<32><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 50) {
         hierarchical_search_cooperative_kernel<50><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 64) {
         hierarchical_search_cooperative_kernel<64><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 100) {
         hierarchical_search_cooperative_kernel<100><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 128) {
         hierarchical_search_cooperative_kernel<128><<<grid, block, shared_mem_bytes>>>(
-            device_node_index, tree_nodes, dataset, queries,
+            device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
