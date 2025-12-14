@@ -1135,6 +1135,64 @@ TEST_F(KMeansCUDA_SIFT10K, TestGPUFormatLoadPerformance)
     remove(gpu_file);
 }
 
+/**
+ * Test: Optimized GPU Format Loading Performance
+ * Verifies that the direct decompression to pinned memory optimization works
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestOptimizedGPUFormatLoading)
+{
+    flann::seed_random(0);
+    const int num_runs = 5;
+
+    // Setup: build and save GPU format
+    flann::Index<flann::L2<float>> index(data,
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+    index.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+
+    const char* gpu_file = "test_optimized_gpu.idx";
+    index.save(gpu_file);
+
+    // Get file size
+    FILE* f_check = fopen(gpu_file, "rb");
+    fseek(f_check, 0, SEEK_END);
+    size_t file_size = ftell(f_check);
+    fclose(f_check);
+
+    // Benchmark optimized GPU format load (multiple runs)
+    double load_ms = 0;
+    for (int i = 0; i < num_runs; ++i) {
+        auto start = std::chrono::high_resolution_clock::now();
+        flann::Index<flann::L2<float>> loaded(data, flann::SavedIndexParams(gpu_file));
+        auto end = std::chrono::high_resolution_clock::now();
+        load_ms += std::chrono::duration<double, std::milli>(end - start).count();
+    }
+    load_ms /= num_runs;
+
+    // Verify loaded index works correctly
+    flann::Index<flann::L2<float>> loaded(data, flann::SavedIndexParams(gpu_file));
+    loaded.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+
+    flann::Matrix<size_t> loaded_indices(new size_t[query.rows * knn], query.rows, knn);
+    flann::Matrix<float> loaded_dists(new float[query.rows * knn], query.rows, knn);
+    loaded.knnSearch(query, loaded_indices, loaded_dists, knn, flann::SearchParams(128));
+
+    float precision = compute_precision(gt_indices, loaded_indices);
+
+    std::cout << "\n=== Optimized GPU Format Loading ===\n"
+              << "File size: " << (file_size / 1024.0) << " KB\n"
+              << "Load time: " << load_ms << " ms (avg of " << num_runs << " runs)\n"
+              << "Precision: " << precision << "\n";
+
+    // The loading should complete quickly (Phase 1 optimization)
+    EXPECT_LT(load_ms, 100.0) << "GPU format load too slow";
+    EXPECT_GT(precision, 0.90f) << "Loaded index precision too low";
+
+    delete[] loaded_indices.ptr();
+    delete[] loaded_dists.ptr();
+    remove(gpu_file);
+}
+
 int main(int argc, char** argv)
 {
     testing::InitGoogleTest(&argc, argv);
