@@ -373,6 +373,10 @@ public:
     
 #define BLOCK_BYTES (1024 * 64)
 
+// LZ4 HC compression level (1-12, higher = better compression, slower)
+// Using maximum compression (12) for smallest file sizes
+static const int LZ4_COMPRESSION_LEVEL = 12;
+
 class SaveArchive : public OutputArchive<SaveArchive>
 {
     /**
@@ -403,7 +407,7 @@ class SaveArchive : public OutputArchive<SaveArchive>
         
         // Init the LZ4 stream
         lz4Stream = &lz4Stream_body;
-        LZ4_resetStreamHC(lz4Stream, 9);
+        LZ4_resetStreamHC(lz4Stream, LZ4_COMPRESSION_LEVEL);
         first_block_ = true;
         
         offset_ = 0;
@@ -418,7 +422,12 @@ class SaveArchive : public OutputArchive<SaveArchive>
             IndexHeaderStruct *head = (IndexHeaderStruct *)buffer_;
             size_t headSz = sizeof(IndexHeaderStruct);
             
-            assert(head->compression == 0);
+            if (head->compression != 0) {
+                throw FLANNException(
+                    "Header compression flag must be 0 before saving. "
+                    "Do not pre-set compression in index headers - "
+                    "SaveArchive sets this during serialization.");
+            }
             head->compression = 1; // Bool now, enum later
         
             // Do the compression for the block
