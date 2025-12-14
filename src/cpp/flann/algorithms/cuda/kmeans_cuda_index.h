@@ -276,7 +276,7 @@ public:
                 "getPoint() not available in GPU-only mode.\n"
                 "Index was loaded with gpu_only=true to save memory.\n"
                 "Options:\n"
-                "  1. Reload with loadIndexGPU(stream, false)\n"
+                "  1. Reload with loadIndexV2(stream, false)\n"
                 "  2. Use knnSearch() for GPU queries instead\n"
                 "  3. Keep original dataset in memory separately");
         }
@@ -326,7 +326,7 @@ public:
         if (gpu_only_mode_) {
             throw FLANNException(
                 "addPoints() not supported in GPU-only mode.\n"
-                "Reload with loadIndexGPU(stream, false) to enable dynamic updates.");
+                "Reload with loadIndexV2(stream, false) to enable dynamic updates.");
         }
         freeGPUMemory();
         BaseClass::addPoints(points, rebuild_threshold);
@@ -343,7 +343,7 @@ public:
         if (gpu_only_mode_) {
             throw FLANNException(
                 "removePoint() not supported in GPU-only mode.\n"
-                "Reload with loadIndexGPU(stream, false) to enable dynamic updates.");
+                "Reload with loadIndexV2(stream, false) to enable dynamic updates.");
         }
         freeGPUMemory();
         BaseClass::removePoint(id);
@@ -474,7 +474,7 @@ public:
      * @brief Save index to file (GPU format if available, CPU format otherwise)
      *
      * If GPU buffers are initialized, saves in GPU-optimized format with
-     * signature "FLANN_GPU_INDEX_v1.0". Otherwise falls back to CPU format.
+     * signature "FLANN_GPU_INDEX_v2.0". Otherwise falls back to CPU format.
      *
      * GPU format stores flat arrays directly, enabling fast reload without
      * tree reconstruction.
@@ -489,85 +489,23 @@ public:
             return;
         }
 
-        serialization::SaveArchive sa(stream);
-
-        // Calculate node_index size from workspace layout
-        // node_index occupies bytes [0, workspace_offset_variance_)
-        size_t node_index_size = workspace_offset_variance_ / sizeof(int);
-
-        // Build GPU header with all metadata
-        GPUIndexHeader header;
-        header.h.data_type = flann_datatype_value<ElementType>::value;
-        header.h.index_type = FLANN_INDEX_KMEANS_GPU_SAVED;
-        header.h.rows = this->size_;
-        header.h.cols = this->veclen_;
-        header.h.padded_veclen = padded_veclen_;
-        header.h.num_nodes = num_nodes_;
-        header.h.node_index_size = node_index_size;
-        header.h.leaf_count = leaf_count_;
-        header.h.branching = this->branching_;
-        header.h.iterations = this->iterations_;
-        header.h.cb_index = this->cb_index_;
-        header.h.centers_init = this->centers_init_;
-
-        sa & header;
-
-        // Download GPU arrays using cudaMemcpy (pointers into workspace)
-        std::vector<int> node_index_host(node_index_size);
-        std::vector<float> node_variance_host(num_nodes_);
-        std::vector<ElementType> pivots_host(num_nodes_ * padded_veclen_);
-        std::vector<ElementType> dataset_host(this->size_ * padded_veclen_);
-
-        CUDA_CHECK(cudaMemcpy(node_index_host.data(), node_index_ptr_,
-                             node_index_size * sizeof(int), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(node_variance_host.data(), node_variance_ptr_,
-                             num_nodes_ * sizeof(float), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(pivots_host.data(), tree_pivots_ptr_,
-                             num_nodes_ * padded_veclen_ * sizeof(ElementType), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(dataset_host.data(), dataset_ptr_,
-                             this->size_ * padded_veclen_ * sizeof(ElementType), cudaMemcpyDeviceToHost));
-
-        // Serialize arrays
-        sa & serialization::make_binary_object(
-            node_index_host.data(),
-            node_index_size * sizeof(int));
-        sa & serialization::make_binary_object(
-            node_variance_host.data(),
-            num_nodes_ * sizeof(float));
-        sa & serialization::make_binary_object(
-            pivots_host.data(),
-            num_nodes_ * padded_veclen_ * sizeof(ElementType));
-        sa & serialization::make_binary_object(
-            dataset_host.data(),
-            this->size_ * padded_veclen_ * sizeof(ElementType));
-
-        // Save NNIndex base data
-        sa & this->last_id_;
-        sa & this->ids_;
-        sa & this->removed_;
-        if (this->removed_) {
-            sa & this->removed_points_;
-        }
-        sa & this->removed_count_;
+        // Use v2.0 format by default (single workspace blob, optimized loading)
+        saveIndexV2(stream);
     }
 
     /**
-     * @brief Load index from file (auto-detects format version)
+     * @brief Load index from file (auto-detects format)
      *
      * Detects format by checking file signature:
-     * - "FLANN_GPU_INDEX_v2.0" → GPU v2.0 format (fastest, single blob)
-     * - "FLANN_GPU_INDEX_v1.0" → GPU v1.0 format (direct GPU upload)
+     * - "FLANN_GPU_INDEX_v2.0" → GPU format (optimized single blob)
      * - "FLANN_INDEX_v1.1" → CPU format (via BaseClass)
      *
      * @param stream Input file stream
      */
     void loadIndex(FILE* stream) override
     {
-        int version = detectGPUFormatVersion(stream);
-        if (version == 2) {
+        if (GPUIndexHeaderV2::detectV2Format(stream)) {
             loadIndexV2(stream);
-        } else if (version == 1) {
-            loadIndexGPU(stream);
         } else {
             // Fall back to CPU format
             freeGPUMemory();
@@ -790,155 +728,13 @@ public:
 
 protected:
     /**
-     * @brief Load GPU-optimized format from file
+     * @brief Save GPU index (single workspace blob format)
      *
-     * Reads flat GPU arrays directly and uploads to GPU memory using
-     * optimized coalesced transfers with pinned memory.
-     *
-     * @param stream Input file stream
-     * @param gpu_only If true (default), skip CPU points_ reconstruction
-     *                 to save ~30-50% memory. getPoint() will throw.
-     *                 If false, reconstruct points_ for CPU compatibility.
-     * @throws FLANNException on validation errors
-     */
-    void loadIndexGPU(FILE* stream, bool gpu_only = true)
-    {
-        freeGPUMemory();
-        gpu_only_mode_ = gpu_only;
-
-        serialization::LoadArchive la(stream);
-
-        GPUIndexHeader header;
-        la & header;
-
-        // Validate header
-        if (header.h.data_type != flann_datatype_value<ElementType>::value) {
-            throw FLANNException("Data type mismatch in GPU index file");
-        }
-        if (header.h.index_type != FLANN_INDEX_KMEANS_GPU_SAVED) {
-            throw FLANNException("Index type mismatch: expected KMEANS_GPU_SAVED");
-        }
-
-        // Restore metadata
-        this->size_ = header.h.rows;
-        this->veclen_ = header.h.cols;
-        this->size_at_build_ = header.h.rows;
-        padded_veclen_ = header.h.padded_veclen;
-        num_nodes_ = header.h.num_nodes;
-        leaf_count_ = header.h.leaf_count;
-        this->branching_ = header.h.branching;
-        this->iterations_ = header.h.iterations;
-        this->cb_index_ = header.h.cb_index;
-        this->centers_init_ = header.h.centers_init;
-
-        // ========================================================================
-        // Calculate workspace layout with 16-byte alignment FIRST
-        // Layout: [node_index | node_variance | tree_pivots | dataset]
-        // ========================================================================
-        size_t node_index_size = header.h.node_index_size;
-        size_t node_index_bytes = node_index_size * sizeof(int);
-        size_t variance_bytes = num_nodes_ * sizeof(float);
-        size_t pivots_size = num_nodes_ * padded_veclen_;
-        size_t pivots_bytes = pivots_size * sizeof(ElementType);
-        size_t dataset_size = this->size_ * padded_veclen_;
-        size_t dataset_bytes = dataset_size * sizeof(ElementType);
-
-        size_t offset_node_index = 0;
-        workspace_offset_variance_ = alignTo16(offset_node_index + node_index_bytes);
-        workspace_offset_pivots_ = alignTo16(workspace_offset_variance_ + variance_bytes);
-        workspace_offset_dataset_ = alignTo16(workspace_offset_pivots_ + pivots_bytes);
-        size_t total_workspace_size = workspace_offset_dataset_ + dataset_bytes;
-
-        // ========================================================================
-        // OPTIMIZED: Load DIRECTLY into pinned buffer at correct offsets
-        // Eliminates 4 heap allocations + 4 memcpy operations
-        // ========================================================================
-        PinnedBuffer<unsigned char> workspace_host(total_workspace_size);
-
-        la & serialization::make_binary_object(
-            workspace_host.get() + offset_node_index,
-            node_index_bytes);
-        la & serialization::make_binary_object(
-            workspace_host.get() + workspace_offset_variance_,
-            variance_bytes);
-        la & serialization::make_binary_object(
-            workspace_host.get() + workspace_offset_pivots_,
-            pivots_bytes);
-        la & serialization::make_binary_object(
-            workspace_host.get() + workspace_offset_dataset_,
-            dataset_bytes);
-
-        // ========================================================================
-        // SINGLE GPU upload (1 cudaMalloc + 1 cudaMemcpy) - THE KEY OPTIMIZATION
-        // ========================================================================
-        workspace_gpu_.resize(total_workspace_size);
-        workspace_gpu_.upload(workspace_host.get(), total_workspace_size);
-
-        // ========================================================================
-        // Set up raw pointers into workspace
-        // ========================================================================
-        unsigned char* base_ptr = workspace_gpu_.get();
-        node_index_ptr_ = reinterpret_cast<int*>(base_ptr + offset_node_index);
-        node_variance_ptr_ = reinterpret_cast<float*>(base_ptr + workspace_offset_variance_);
-        tree_pivots_ptr_ = reinterpret_cast<ElementType*>(base_ptr + workspace_offset_pivots_);
-        dataset_ptr_ = reinterpret_cast<ElementType*>(base_ptr + workspace_offset_dataset_);
-
-        // ========================================================================
-        // Optionally reconstruct points_ for CPU compatibility
-        // ========================================================================
-        if (gpu_only) {
-            // GPU-only mode: skip points_ reconstruction to save memory
-            delete[] this->data_ptr_;
-            this->data_ptr_ = nullptr;
-            this->points_.clear();
-        } else {
-            // CPU-compatible mode: reconstruct points_ from workspace_host
-            // (dataset is at workspace_offset_dataset_ in the pinned buffer)
-            delete[] this->data_ptr_;
-            this->data_ptr_ = new ElementType[this->size_ * this->veclen_];
-            this->points_.resize(this->size_);
-
-            const ElementType* dataset_in_workspace = reinterpret_cast<const ElementType*>(
-                workspace_host.get() + workspace_offset_dataset_);
-            for (size_t i = 0; i < this->size_; ++i) {
-                this->points_[i] = this->data_ptr_ + i * this->veclen_;
-                std::memcpy(this->points_[i],
-                           &dataset_in_workspace[i * padded_veclen_],
-                           this->veclen_ * sizeof(ElementType));
-            }
-        }
-
-        // ========================================================================
-        // Load NNIndex base data
-        // ========================================================================
-        la & this->last_id_;
-        la & this->ids_;
-        la & this->removed_;
-        if (this->removed_) {
-            la & this->removed_points_;
-        }
-        la & this->removed_count_;
-
-        // Restore index params
-        this->index_params_["algorithm"] = FLANN_INDEX_KMEANS_CUDA;
-        this->index_params_["branching"] = this->branching_;
-        this->index_params_["iterations"] = this->iterations_;
-        this->index_params_["centers_init"] = this->centers_init_;
-        this->index_params_["cb_index"] = this->cb_index_;
-
-        gpu_initialized_ = true;
-        // Note: root_ is NOT reconstructed - GPU format is GPU-only
-        // CPU search will not work until buildIndex() is called
-    }
-
-    /**
-     * @brief Save GPU index in v2.0 format (single workspace blob)
-     *
-     * V2.0 format advantages:
+     * Format features:
      * - Pre-computed workspace offsets stored in header
      * - Single contiguous blob with alignment padding included
      * - Zero runtime computation at load time
-     * - ~50-60% faster loading than v1.0
+     * - Direct upload to GPU via pinned memory
      *
      * @param stream Output file stream
      */

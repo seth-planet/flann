@@ -163,11 +163,13 @@ bool convertIndex(const char* input, const char* output,
         loaded.buildCUDAKnnSearch(k, flann::SearchParams(checks));
 
         // Run search after conversion
+        // Use the original queries from before conversion (GPU-only mode doesn't support getPoint)
         flann::Matrix<size_t> indices_after(new size_t[num_queries * k], num_queries, k);
         flann::Matrix<DistanceType> dists_after(new DistanceType[num_queries * k], num_queries, k);
 
-        flann::Matrix<ElementType> queries(const_cast<ElementType*>(loaded.getPoint(0)),
-                                           num_queries, loaded.veclen());
+        // Reuse original queries from before conversion
+        flann::Matrix<ElementType> queries(const_cast<ElementType*>(index.getPoint(0)),
+                                           num_queries, index.veclen());
         loaded.knnSearch(queries, indices_after, dists_after, k, flann::SearchParams(checks));
 
         // Compare results using precision (not exact match, since GPU may find better neighbors)

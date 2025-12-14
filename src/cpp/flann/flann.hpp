@@ -549,17 +549,22 @@ private:
         }
 
 #ifdef FLANN_USE_CUDA
-        // Check for GPU format FIRST (has different signature)
-        if (GPUIndexHeader::detectGPUFormat(fin)) {
-            // Read GPU header to get index type and data type
-            GPUIndexHeader gpu_header = load_gpu_header(fin);
-            if (gpu_header.h.data_type != flann_datatype_value<ElementType>::value) {
+        // Check for GPU v2.0 format (has different signature)
+        if (GPUIndexHeaderV2::detectV2Format(fin)) {
+            // Read GPU header directly (don't use LoadArchive - it expects full file read)
+            rewind(fin);
+            GPUIndexHeaderV2Struct header;
+            if (fread(&header, sizeof(header), 1, fin) != 1) {
+                fclose(fin);
+                throw FLANNException("Failed to read GPU index header");
+            }
+            if (header.data_type != flann_datatype_value<ElementType>::value) {
                 fclose(fin);
                 throw FLANNException("Datatype of saved GPU index is different than of the one to be loaded.");
             }
             IndexParams params;
-            params["algorithm"] = gpu_header.h.index_type;
-            IndexType* nnIndex = create_index_by_type<Distance>(gpu_header.h.index_type, dataset, params, distance);
+            params["algorithm"] = header.index_type;
+            IndexType* nnIndex = create_index_by_type<Distance>(header.index_type, dataset, params, distance);
             rewind(fin);
             nnIndex->loadIndex(fin);
             fclose(fin);
