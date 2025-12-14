@@ -293,10 +293,144 @@ private:
     size_t size_bytes_;
 };
 
-// Note: PinnedBuffer class was removed (commit 2a48cd5) because A/B testing
+// Note: PinnedBuffer was originally removed (commit 2a48cd5) because A/B testing
 // showed pinned memory provides no benefit for small transfers (<1MB).
-// The ~60KB query/result buffers used in typical searches perform identically
-// with standard pageable memory.
+// However, for GPU index loading, dataset transfers are 10-200MB and benefit
+// significantly from DMA acceleration via pinned memory.
+
+/**
+ * @brief Align offset to 16-byte boundary for CUDA memory coalescing
+ *
+ * CUDA memory accesses perform best when aligned to 16 bytes.
+ * Used when packing multiple arrays into a single GPU buffer.
+ *
+ * @param offset Current byte offset
+ * @return Aligned offset (rounded up to next 16-byte boundary)
+ */
+inline size_t alignTo16(size_t offset) {
+    return ((offset + 15) / 16) * 16;
+}
+
+/**
+ * @brief RAII wrapper for pinned (page-locked) host memory
+ *
+ * Pinned memory enables faster DMA transfers to GPU by allowing
+ * direct memory access without staging through pageable memory.
+ *
+ * Key characteristics:
+ * - 1.5-2x faster cudaMemcpy for large transfers (>1MB)
+ * - Automatic fallback to regular malloc if cudaMallocHost fails
+ * - Move-only semantics (like CUDABuffer)
+ * - Best used for staging buffers that flow directly to GPU
+ *
+ * @tparam T Element type
+ *
+ * @code
+ * // Allocate pinned buffer for GPU upload
+ * PinnedBuffer<float> staging(dataset_size);
+ *
+ * // Fill with data
+ * std::memcpy(staging.get(), source_data, dataset_size * sizeof(float));
+ *
+ * // Upload to GPU (faster with pinned memory)
+ * gpu_buffer.upload(staging.get(), dataset_size);
+ *
+ * // Check if pinned allocation succeeded (for debugging)
+ * if (staging.is_pinned()) {
+ *     std::cerr << "Using pinned memory for transfer" << std::endl;
+ * }
+ * @endcode
+ */
+template<typename T>
+class PinnedBuffer {
+public:
+    /**
+     * @brief Allocate pinned host memory for 'count' elements
+     *
+     * Falls back to regular malloc if cudaMallocHost fails.
+     *
+     * @param count Number of elements (not bytes)
+     * @throws FLANNException if both pinned and regular allocation fail
+     */
+    explicit PinnedBuffer(size_t count = 0)
+        : ptr_(nullptr), count_(count), is_pinned_(false)
+    {
+        if (count == 0) return;
+
+        cudaError_t err = cudaMallocHost(&ptr_, count * sizeof(T));
+        if (err == cudaSuccess) {
+            is_pinned_ = true;
+        } else {
+            // Fallback to regular allocation (pageable memory)
+            ptr_ = static_cast<T*>(malloc(count * sizeof(T)));
+            if (!ptr_) {
+                throw FLANNException(
+                    std::string("Failed to allocate pinned/regular buffer for ") +
+                    std::to_string(count * sizeof(T)) + " bytes"
+                );
+            }
+            is_pinned_ = false;
+        }
+    }
+
+    /**
+     * @brief Destructor: free pinned or regular memory
+     */
+    ~PinnedBuffer() {
+        if (ptr_) {
+            if (is_pinned_) {
+                cudaFreeHost(ptr_);  // Error ignored (destructor can't throw)
+            } else {
+                free(ptr_);
+            }
+        }
+    }
+
+    // Disable copy (prevent double-free)
+    PinnedBuffer(const PinnedBuffer&) = delete;
+    PinnedBuffer& operator=(const PinnedBuffer&) = delete;
+
+    // Enable move
+    PinnedBuffer(PinnedBuffer&& other) noexcept
+        : ptr_(other.ptr_), count_(other.count_), is_pinned_(other.is_pinned_)
+    {
+        other.ptr_ = nullptr;
+        other.count_ = 0;
+        other.is_pinned_ = false;
+    }
+
+    PinnedBuffer& operator=(PinnedBuffer&& other) noexcept {
+        if (this != &other) {
+            if (ptr_) {
+                if (is_pinned_) cudaFreeHost(ptr_);
+                else free(ptr_);
+            }
+            ptr_ = other.ptr_;
+            count_ = other.count_;
+            is_pinned_ = other.is_pinned_;
+            other.ptr_ = nullptr;
+            other.count_ = 0;
+            other.is_pinned_ = false;
+        }
+        return *this;
+    }
+
+    // Accessors
+    T* get() { return ptr_; }
+    const T* get() const { return ptr_; }
+    T& operator[](size_t index) { return ptr_[index]; }
+    const T& operator[](size_t index) const { return ptr_[index]; }
+    size_t count() const { return count_; }
+    size_t size_bytes() const { return count_ * sizeof(T); }
+    bool empty() const { return count_ == 0; }
+    bool is_pinned() const { return is_pinned_; }
+    explicit operator bool() const { return ptr_ != nullptr; }
+
+private:
+    T* ptr_;
+    size_t count_;
+    bool is_pinned_;
+};
 
 /**
  * @brief Query CUDA device capabilities for cooperative kernel

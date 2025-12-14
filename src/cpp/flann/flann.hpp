@@ -41,6 +41,9 @@
 #include "flann/util/matrix.h"
 #include "flann/util/params.h"
 #include "flann/util/saving.h"
+#ifdef FLANN_USE_CUDA
+#include "flann/util/gpu_saving.h"
+#endif
 
 #include "flann/algorithms/all_indices.h"
 
@@ -485,6 +488,56 @@ public:
         // Non-CUDA index types are never GPU-ready
         return false;
     }
+
+    /**
+     * Check if index has GPU-optimized format available for saving
+     * @return true if GPU buffers are initialized and index can be saved in GPU format
+     */
+    bool hasGPUFormat() const
+    {
+        flann_algorithm_t index_type = nnIndex_->getType();
+
+        if (index_type == FLANN_INDEX_KMEANS_CUDA) {
+            return static_cast<cuda::KMeansCUDAIndex<Distance>*>(
+                nnIndex_)->hasGPUFormat();
+        }
+
+        if (index_type == FLANN_INDEX_HIERARCHICAL_CUDA) {
+            return static_cast<cuda::HierarchicalCUDAIndex<Distance>*>(
+                nnIndex_)->hasGPUFormat();
+        }
+
+        return false;
+    }
+
+    /**
+     * Convert index to GPU-optimized format for faster save/load
+     *
+     * After calling this method:
+     * - GPU search will work
+     * - CPU search will NOT work (CPU tree discarded)
+     * - Index can be saved in GPU-optimized format
+     *
+     * @throws FLANNException if index not built or not a CUDA index type
+     */
+    void convertToGPUFormat()
+    {
+        flann_algorithm_t index_type = nnIndex_->getType();
+
+        if (index_type == FLANN_INDEX_KMEANS_CUDA) {
+            static_cast<cuda::KMeansCUDAIndex<Distance>*>(
+                nnIndex_)->convertToGPUFormat();
+            return;
+        }
+
+        if (index_type == FLANN_INDEX_HIERARCHICAL_CUDA) {
+            static_cast<cuda::HierarchicalCUDAIndex<Distance>*>(
+                nnIndex_)->convertToGPUFormat();
+            return;
+        }
+
+        throw FLANNException("convertToGPUFormat() only supported for CUDA index types");
+    }
 #endif /* FLANN_USE_CUDA */
 
 private:
@@ -494,6 +547,40 @@ private:
         if (fin == NULL) {
             return NULL;
         }
+
+#ifdef FLANN_USE_CUDA
+        // Check for GPU format FIRST (has different signature)
+        if (GPUIndexHeader::detectGPUFormat(fin)) {
+            // Read GPU header to get index type and data type
+            GPUIndexHeader gpu_header = load_gpu_header(fin);
+            if (gpu_header.h.data_type != flann_datatype_value<ElementType>::value) {
+                fclose(fin);
+                throw FLANNException("Datatype of saved GPU index is different than of the one to be loaded.");
+            }
+            IndexParams params;
+            params["algorithm"] = gpu_header.h.index_type;
+            IndexType* nnIndex = create_index_by_type<Distance>(gpu_header.h.index_type, dataset, params, distance);
+            rewind(fin);
+            nnIndex->loadIndex(fin);
+            fclose(fin);
+            return nnIndex;
+        }
+#else
+        // Check for GPU signature without CUDA support - detect by peeking
+        {
+            char sig[24];
+            if (fread(sig, sizeof(sig), 1, fin) == 1) {
+                if (strncmp(sig, "FLANN_GPU_INDEX", strlen("FLANN_GPU_INDEX")) == 0) {
+                    fclose(fin);
+                    throw FLANNException("Cannot load GPU-saved index: FLANN compiled without CUDA support. "
+                        "Rebuild FLANN with -DBUILD_CUDA_LIB=ON to load GPU-format indices.");
+                }
+            }
+            rewind(fin);
+        }
+#endif
+
+        // Standard FLANN format
         IndexHeader header = load_header(fin);
         if (header.h.data_type != flann_datatype_value<ElementType>::value) {
             fclose(fin);

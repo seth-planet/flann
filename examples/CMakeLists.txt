@@ -64,6 +64,17 @@ if (BUILD_CUDA_LIB)
         target_include_directories(flann_example_mpi PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
         target_link_libraries(flann_example_mpi flann_cuda)
     endif()
+
+    # GPU format conversion utility
+    add_executable(flann_convert_to_gpu flann_convert_to_gpu.cpp)
+    target_compile_definitions(flann_convert_to_gpu PRIVATE FLANN_USE_CUDA)
+    target_include_directories(flann_convert_to_gpu PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    target_link_libraries(flann_convert_to_gpu ${LZ4_LINK_LIBRARIES} flann_cuda_s)
+
+    add_dependencies(examples flann_convert_to_gpu)
+    install(TARGETS flann_convert_to_gpu DESTINATION bin)
+
+    message(STATUS "Building CUDA conversion utility: flann_convert_to_gpu")
 endif()
 
 

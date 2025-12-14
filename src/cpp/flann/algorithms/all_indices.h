@@ -180,9 +180,11 @@ inline NNIndex<Distance>*
 		nnIndex = create_index_<KDTreeCuda3dIndex,Distance,ElementType>(dataset, params, distance);
 		break;
 	case FLANN_INDEX_KMEANS_CUDA:
+	case FLANN_INDEX_KMEANS_GPU_SAVED:
 		nnIndex = create_index_<cuda::KMeansCUDAIndex,Distance,ElementType>(dataset, params, distance);
 		break;
 	case FLANN_INDEX_HIERARCHICAL_CUDA:
+	case FLANN_INDEX_HIERARCHICAL_GPU_SAVED:
 		nnIndex = create_index_<cuda::HierarchicalCUDAIndex,Distance,ElementType>(dataset, params, distance);
 		break;
 #endif

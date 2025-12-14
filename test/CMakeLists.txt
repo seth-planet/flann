@@ -82,6 +82,22 @@ if (HDF5_FOUND)
 
     install(TARGETS benchmark_comprehensive DESTINATION bin)
     message(STATUS "Building benchmark_comprehensive")
+
+    # GPU index format statistics benchmark (CUDA only)
+    if (BUILD_CUDA_LIB)
+        add_executable(benchmark_gpu_index_stats ../scripts/benchmark_gpu_index_stats.cpp)
+        target_include_directories(benchmark_gpu_index_stats PRIVATE ${HDF5_INCLUDE_DIR})
+        target_compile_definitions(benchmark_gpu_index_stats PRIVATE FLANN_USE_CUDA)
+        target_include_directories(benchmark_gpu_index_stats PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+        target_link_libraries(benchmark_gpu_index_stats
+            ${LZ4_LINK_LIBRARIES}
+            flann_cuda
+            ${TEST_LIBRARIES}
+            CUDA::cudart)
+        target_compile_options(benchmark_gpu_index_stats PRIVATE -O3 -march=native)
+        install(TARGETS benchmark_gpu_index_stats DESTINATION bin)
+        message(STATUS "Building benchmark_gpu_index_stats")
+    endif()
 endif()
 
 #---------- pyunit tests --------------
