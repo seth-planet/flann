@@ -34,6 +34,8 @@
 
 #include <gtest/gtest.h>
 #include <time.h>
+#include <chrono>
+#include <set>
 
 #include <flann/flann.h>
 #include <flann/io/hdf5.h>
@@ -594,6 +596,543 @@ TEST_F(KMeansCUDA_SIFT10K, TestKEqualsDatasetSize)
     delete[] small_data.ptr();
     delete[] indices.ptr();
     delete[] dists.ptr();
+}
+
+// ============================================================================
+// GPU Save/Load Tests
+// ============================================================================
+
+/**
+ * Test: GPU-Optimized Save/Load
+ * Save in GPU format, reload, and verify search results match
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestGPUSaveLoad)
+{
+    flann::seed_random(0);
+    flann::Index<flann::L2<float>> index(data,
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+
+    index.buildIndex();
+    index.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+
+    // Search before save
+    flann::Matrix<size_t> indices1(new size_t[query.rows * knn], query.rows, knn);
+    flann::Matrix<float> dists1(new float[query.rows * knn], query.rows, knn);
+    index.knnSearch(query, indices1, dists1, knn, flann::SearchParams(128));
+
+    // Verify GPU format is available
+    EXPECT_TRUE(index.hasGPUFormat());
+
+    // Save in GPU format
+    index.save("test_kmeans_gpu_saved.idx");
+
+    // Load from GPU format
+    flann::Index<flann::L2<float>> index2(data,
+        flann::SavedIndexParams("test_kmeans_gpu_saved.idx"));
+
+    // Need to warm up GPU for loaded index
+    index2.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+
+    // Search after load
+    flann::Matrix<size_t> indices2(new size_t[query.rows * knn], query.rows, knn);
+    flann::Matrix<float> dists2(new float[query.rows * knn], query.rows, knn);
+    index2.knnSearch(query, indices2, dists2, knn, flann::SearchParams(128));
+
+    // Verify results match exactly
+    for (size_t i = 0; i < query.rows; ++i) {
+        for (size_t j = 0; j < knn; ++j) {
+            EXPECT_EQ(indices1[i][j], indices2[i][j])
+                << "Mismatch at query " << i << " neighbor " << j;
+            EXPECT_NEAR(dists1[i][j], dists2[i][j], 0.001)
+                << "Distance mismatch at query " << i << " neighbor " << j;
+        }
+    }
+
+    delete[] indices1.ptr();
+    delete[] dists1.ptr();
+    delete[] indices2.ptr();
+    delete[] dists2.ptr();
+
+    // Cleanup test file
+    remove("test_kmeans_gpu_saved.idx");
+}
+
+/**
+ * Test: Convert to GPU Format
+ * Verify convertToGPUFormat() discards CPU tree and enables GPU search
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestConvertToGPUFormat)
+{
+    flann::seed_random(0);
+    flann::Index<flann::L2<float>> index(data,
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+
+    index.buildIndex();
+    index.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+
+    // Before conversion
+    EXPECT_TRUE(index.hasGPUFormat());
+    EXPECT_TRUE(index.isGPUSearchReady());
+
+    // Convert to GPU format (discards CPU tree)
+    index.convertToGPUFormat();
+
+    // After conversion - GPU format still available
+    EXPECT_TRUE(index.hasGPUFormat());
+
+    // Save and reload
+    index.save("test_kmeans_converted.idx");
+
+    flann::Index<flann::L2<float>> index2(data,
+        flann::SavedIndexParams("test_kmeans_converted.idx"));
+    index2.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+
+    // Search works after loading GPU format
+    flann::Matrix<size_t> indices(new size_t[query.rows * knn], query.rows, knn);
+    flann::Matrix<float> dists(new float[query.rows * knn], query.rows, knn);
+    index2.knnSearch(query, indices, dists, knn, flann::SearchParams(128));
+
+    // Verify reasonable precision
+    float precision = compute_precision(gt_indices, indices);
+    EXPECT_GE(precision, 0.95)
+        << "Precision too low after GPU save/load: " << precision;
+
+    delete[] indices.ptr();
+    delete[] dists.ptr();
+    remove("test_kmeans_converted.idx");
+}
+
+/**
+ * Test: Format Auto-Detection
+ * Verify both CPU and GPU formats can be loaded transparently
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestFormatDetection)
+{
+    flann::seed_random(0);
+
+    // Create and save CPU format (without GPU init)
+    {
+        flann::Index<flann::L2<float>> index(data,
+            flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+        index.buildIndex();
+        // Don't call buildCUDAKnnSearch - saves in CPU format
+        EXPECT_FALSE(index.hasGPUFormat());
+        index.save("test_kmeans_cpu_format.idx");
+    }
+
+    // Create and save GPU format
+    {
+        flann::Index<flann::L2<float>> index(data,
+            flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+        index.buildIndex();
+        index.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+        EXPECT_TRUE(index.hasGPUFormat());
+        index.save("test_kmeans_gpu_format.idx");
+    }
+
+    // Load CPU format - should work
+    {
+        flann::Index<flann::L2<float>> index(data,
+            flann::SavedIndexParams("test_kmeans_cpu_format.idx"));
+        EXPECT_EQ(index.size(), data.rows);
+    }
+
+    // Load GPU format - should work
+    {
+        flann::Index<flann::L2<float>> index(data,
+            flann::SavedIndexParams("test_kmeans_gpu_format.idx"));
+        EXPECT_EQ(index.size(), data.rows);
+    }
+
+    remove("test_kmeans_cpu_format.idx");
+    remove("test_kmeans_gpu_format.idx");
+}
+
+// ============================================================================
+// GPU Save/Load Gap Coverage Tests
+// Additional tests to ensure GPU save/load is at least as comprehensive as CPU
+// ============================================================================
+
+/**
+ * Test: GPU Format Save After Remove
+ * Verify GPU format save/load preserves removed point state
+ * (Current TestRemove uses CPU format save)
+ */
+TEST_F(KMeansCUDA_SIFT100K, TestGPUFormatSaveAfterRemove)
+{
+    flann::seed_random(0);
+    const size_t test_knn = 5;
+    flann::Matrix<size_t> indices1(new size_t[query.rows*test_knn], query.rows, test_knn);
+    flann::Matrix<float> dists1(new float[query.rows*test_knn], query.rows, test_knn);
+
+    // Build index
+    flann::Index<flann::L2<float>> index(data,
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+    index.buildCUDAKnnSearch(test_knn, flann::SearchParams(128));
+
+    // Search to find points to remove
+    index.knnSearch(query, indices1, dists1, test_knn, flann::SearchParams(128));
+
+    // Remove ~50% of found neighbors (use set to avoid duplicates)
+    std::set<size_t> removed_points;
+    for (size_t i = 0; i < indices1.rows && removed_points.size() < data.rows / 2; ++i) {
+        for (size_t j = 0; j < indices1.cols && removed_points.size() < data.rows / 2; ++j) {
+            size_t pt = indices1[i][j];
+            if (removed_points.find(pt) == removed_points.end()) {
+                index.removePoint(pt);
+                removed_points.insert(pt);
+            }
+        }
+    }
+    printf("Removed %zu points\n", removed_points.size());
+
+    // Re-init GPU and convert to GPU format
+    index.buildCUDAKnnSearch(test_knn, flann::SearchParams(128));
+    ASSERT_TRUE(index.hasGPUFormat());
+    index.convertToGPUFormat();
+
+    // Save GPU format
+    const char* filename = "test_gpu_format_after_remove_kmeans.idx";
+    index.save(filename);
+
+    // Load with SavedIndexParams and init GPU
+    flann::Index<flann::L2<float>> index2(data, flann::SavedIndexParams(filename));
+    index2.buildCUDAKnnSearch(test_knn, flann::SearchParams(128));
+
+    // Search after load
+    flann::Matrix<size_t> indices2(new size_t[query.rows*test_knn], query.rows, test_knn);
+    flann::Matrix<float> dists2(new float[query.rows*test_knn], query.rows, test_knn);
+    index2.knnSearch(query, indices2, dists2, test_knn, flann::SearchParams(128));
+
+    // Verify removed points don't appear in results
+    int removed_found = 0;
+    for (size_t i = 0; i < indices2.rows; ++i) {
+        for (size_t j = 0; j < indices2.cols; ++j) {
+            if (removed_points.find(indices2[i][j]) != removed_points.end()) {
+                removed_found++;
+            }
+        }
+    }
+    EXPECT_EQ(removed_found, 0) << "Found " << removed_found << " removed points in results";
+
+    // Cleanup
+    remove(filename);
+    delete[] indices1.ptr();
+    delete[] dists1.ptr();
+    delete[] indices2.ptr();
+    delete[] dists2.ptr();
+}
+
+/**
+ * Test: CPU Format Load With GPU Acceleration
+ * Verify CPU-saved indices can be GPU-accelerated after load
+ */
+TEST_F(KMeansCUDA_SIFT100K, TestCPUFormatLoadWithGPU)
+{
+    flann::seed_random(0);
+    const size_t test_knn = 5;
+
+    // Build index WITHOUT GPU init (saves CPU format)
+    flann::Index<flann::L2<float>> index(data,
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+    EXPECT_FALSE(index.hasGPUFormat()) << "Should not have GPU format before buildCUDAKnnSearch";
+
+    // CPU baseline search
+    flann::Matrix<size_t> indices_cpu(new size_t[query.rows*test_knn], query.rows, test_knn);
+    flann::Matrix<float> dists_cpu(new float[query.rows*test_knn], query.rows, test_knn);
+    index.knnSearch(query, indices_cpu, dists_cpu, test_knn, flann::SearchParams(128));
+    float cpu_precision = compute_precision(gt_indices, indices_cpu);
+    printf("CPU baseline precision: %.2f%%\n", cpu_precision * 100);
+
+    // Save CPU format
+    const char* filename = "test_cpu_format_load_with_gpu_kmeans.idx";
+    index.save(filename);
+
+    // Load and init GPU on CPU-format file
+    flann::Index<flann::L2<float>> index2(data, flann::SavedIndexParams(filename));
+    EXPECT_FALSE(index2.hasGPUFormat()) << "Loaded CPU format should not have GPU format";
+    index2.buildCUDAKnnSearch(test_knn, flann::SearchParams(128));
+    EXPECT_TRUE(index2.isGPUSearchReady()) << "GPU search should be ready after buildCUDAKnnSearch";
+
+    // GPU search after loading CPU format
+    flann::Matrix<size_t> indices_gpu(new size_t[query.rows*test_knn], query.rows, test_knn);
+    flann::Matrix<float> dists_gpu(new float[query.rows*test_knn], query.rows, test_knn);
+    index2.knnSearch(query, indices_gpu, dists_gpu, test_knn, flann::SearchParams(128));
+    float gpu_precision = compute_precision(gt_indices, indices_gpu);
+    printf("GPU precision after CPU format load: %.2f%%\n", gpu_precision * 100);
+
+    // GPU precision should be close to CPU (within 2% for L2 distance)
+    EXPECT_GE(gpu_precision, cpu_precision - 0.02f)
+        << "GPU precision " << gpu_precision << " too low vs CPU " << cpu_precision;
+    EXPECT_GE(gpu_precision, 0.93f) << "GPU precision below threshold";
+
+    // Cleanup
+    remove(filename);
+    delete[] indices_cpu.ptr();
+    delete[] dists_cpu.ptr();
+    delete[] indices_gpu.ptr();
+    delete[] dists_gpu.ptr();
+}
+
+/**
+ * Test: GPU Format Save After Incremental Add
+ * Ensure GPU format correctly captures incrementally-added data
+ */
+TEST_F(KMeansCUDA_SIFT100K, TestGPUFormatSaveAfterIncrementalAdd)
+{
+    flann::seed_random(0);
+    const size_t test_knn = 5;
+
+    // Split data 50/50
+    size_t size1 = data.rows / 2;
+    size_t size2 = data.rows - size1;
+    flann::Matrix<float> data1(data[0], size1, data.cols);
+    flann::Matrix<float> data2(data[size1], size2, data.cols);
+
+    // Build with 50% data
+    flann::Index<flann::L2<float>> index(data1,
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+    index.buildCUDAKnnSearch(test_knn, flann::SearchParams(128));
+    EXPECT_EQ(index.size(), size1);
+
+    // Add remaining 50%
+    index.addPoints(data2, 2.0f);
+    EXPECT_EQ(index.size(), data.rows);
+    printf("Added %zu points (total now %zu)\n", size2, index.size());
+
+    // Re-init GPU after add
+    index.buildCUDAKnnSearch(test_knn, flann::SearchParams(128));
+    EXPECT_TRUE(index.hasGPUFormat());
+
+    // Convert and save GPU format
+    index.convertToGPUFormat();
+    const char* filename = "test_gpu_format_after_add_kmeans.idx";
+    index.save(filename);
+
+    // Load and init GPU
+    flann::Index<flann::L2<float>> index2(data, flann::SavedIndexParams(filename));
+    index2.buildCUDAKnnSearch(test_knn, flann::SearchParams(128));
+    EXPECT_EQ(index2.size(), data.rows);
+
+    // Search and verify precision
+    flann::Matrix<size_t> indices(new size_t[query.rows*test_knn], query.rows, test_knn);
+    flann::Matrix<float> dists(new float[query.rows*test_knn], query.rows, test_knn);
+    index2.knnSearch(query, indices, dists, test_knn, flann::SearchParams(128));
+    float precision = compute_precision(gt_indices, indices);
+    printf("Precision after incremental add + GPU save/load: %.2f%%\n", precision * 100);
+    EXPECT_GE(precision, 0.93f) << "Precision after load: " << precision;
+
+    // Cleanup
+    remove(filename);
+    delete[] indices.ptr();
+    delete[] dists.ptr();
+}
+
+// ============================================================================
+// Comprehensive E2E Tests
+// ============================================================================
+
+/**
+ * Helper function to get file size in bytes
+ */
+inline size_t getFileSize(const char* filename) {
+    FILE* f = fopen(filename, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    size_t size = ftell(f);
+    fclose(f);
+    return size;
+}
+
+/**
+ * Test: End-to-End GPU Save/Load Cycle
+ * Full workflow: CPU baseline → GPU → convert → save → load → verify
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestEndToEndGPUSaveLoadCycle)
+{
+    flann::seed_random(0);
+
+    // Build index
+    flann::Index<flann::L2<float>> index(data,
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+
+    // Stage 1: CPU baseline search
+    // Note: CPU search uses different algorithm than GPU, so precision may differ
+    flann::Matrix<size_t> cpu_indices(new size_t[query.rows * knn], query.rows, knn);
+    flann::Matrix<float> cpu_dists(new float[query.rows * knn], query.rows, knn);
+    index.knnSearch(query, cpu_indices, cpu_dists, knn, flann::SearchParams(128));
+    float cpu_precision = compute_precision(gt_indices, cpu_indices);
+    EXPECT_GE(cpu_precision, 0.70f) << "CPU baseline precision too low";
+
+    // Stage 2: GPU search
+    index.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+    flann::Matrix<size_t> gpu_indices(new size_t[query.rows * knn], query.rows, knn);
+    flann::Matrix<float> gpu_dists(new float[query.rows * knn], query.rows, knn);
+    index.knnSearch(query, gpu_indices, gpu_dists, knn, flann::SearchParams(128));
+    float gpu_precision = compute_precision(gt_indices, gpu_indices);
+    EXPECT_GE(gpu_precision, cpu_precision - 0.02f)
+        << "GPU precision dropped vs CPU: " << gpu_precision << " vs " << cpu_precision;
+
+    // Stage 3: Convert to GPU-only format and save
+    index.convertToGPUFormat();
+    EXPECT_TRUE(index.hasGPUFormat());
+    const char* filename = "test_e2e_kmeans.idx";
+    index.save(filename);
+    size_t file_size = getFileSize(filename);
+    EXPECT_GT(file_size, 0u) << "File not created";
+
+    // Stage 4: Load and verify
+    flann::Index<flann::L2<float>> loaded(data, flann::SavedIndexParams(filename));
+    loaded.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+
+    flann::Matrix<size_t> loaded_indices(new size_t[query.rows * knn], query.rows, knn);
+    flann::Matrix<float> loaded_dists(new float[query.rows * knn], query.rows, knn);
+    loaded.knnSearch(query, loaded_indices, loaded_dists, knn, flann::SearchParams(128));
+    float loaded_precision = compute_precision(gt_indices, loaded_indices);
+
+    // Final assertions
+    EXPECT_GE(loaded_precision, cpu_precision - 0.02f)
+        << "Loaded precision dropped vs CPU baseline: " << loaded_precision << " vs " << cpu_precision;
+    EXPECT_GE(loaded_precision, 0.95f)
+        << "Loaded index precision too low: " << loaded_precision;
+
+    // Results after load should match results before save (exact)
+    for (size_t i = 0; i < query.rows; ++i) {
+        for (size_t j = 0; j < knn; ++j) {
+            EXPECT_EQ(gpu_indices[i][j], loaded_indices[i][j])
+                << "Result mismatch at query " << i << " neighbor " << j;
+        }
+    }
+
+    // Cleanup
+    delete[] cpu_indices.ptr();
+    delete[] cpu_dists.ptr();
+    delete[] gpu_indices.ptr();
+    delete[] gpu_dists.ptr();
+    delete[] loaded_indices.ptr();
+    delete[] loaded_dists.ptr();
+    remove(filename);
+
+    std::cout << "E2E Precision Summary: CPU=" << cpu_precision
+              << " GPU=" << gpu_precision
+              << " Loaded=" << loaded_precision
+              << " FileSize=" << file_size << " bytes\n";
+}
+
+/**
+ * Test: GPU Format File Size Efficiency
+ * Compare GPU format against CPU format WITH save_dataset=true (apples-to-apples)
+ * GPU format always saves the dataset since CPU tree is discarded after conversion.
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestGPUFormatFileSizeEfficiency)
+{
+    flann::seed_random(0);
+
+    // Build index with save_dataset=true for fair comparison
+    flann::KMeansCUDAIndexParams params(32, 11, FLANN_CENTERS_RANDOM, 0.2);
+    params["save_dataset"] = true;  // Enable dataset saving for CPU format
+    flann::Index<flann::L2<float>> index(data, params);
+    index.buildIndex();
+
+    // Save CPU format WITH dataset
+    const char* cpu_file = "test_filesize_cpu_kmeans.idx";
+    index.save(cpu_file);
+    size_t cpu_size = getFileSize(cpu_file);
+
+    // Convert and save GPU format
+    index.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+    index.convertToGPUFormat();
+    const char* gpu_file = "test_filesize_gpu_kmeans.idx";
+    index.save(gpu_file);
+    size_t gpu_size = getFileSize(gpu_file);
+
+    // Raw data size calculation
+    size_t raw_dataset_bytes = data.rows * data.cols * sizeof(float);
+    size_t padded_veclen = ((data.cols + 3) / 4) * 4;
+    size_t padded_dataset_bytes = data.rows * padded_veclen * sizeof(float);
+
+    std::cout << "File Size Analysis (KMeans, save_dataset=true):\n"
+              << "  CPU format (with dataset): " << cpu_size << " bytes\n"
+              << "  GPU format:                " << gpu_size << " bytes\n"
+              << "  Raw dataset:               " << raw_dataset_bytes << " bytes\n"
+              << "  Padded dataset:            " << padded_dataset_bytes << " bytes\n"
+              << "  GPU/CPU ratio:             " << (float)gpu_size / cpu_size << "x\n";
+
+    // GPU format should not be significantly larger than CPU format with dataset
+    // Allow up to 2x size due to padding and different tree representation
+    EXPECT_GT(gpu_size, 0u) << "GPU file is empty";
+    EXPECT_LE(gpu_size, cpu_size * 2)
+        << "GPU format significantly larger than CPU format with dataset";
+
+    remove(cpu_file);
+    remove(gpu_file);
+}
+
+/**
+ * Test: GPU Format Load Performance
+ * Verify GPU format loading is efficient
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestGPUFormatLoadPerformance)
+{
+    flann::seed_random(0);
+    const int num_runs = 3;
+
+    // Setup: build and save both formats
+    flann::Index<flann::L2<float>> index(data,
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+
+    const char* cpu_file = "test_loadperf_cpu_kmeans.idx";
+    index.save(cpu_file);
+
+    index.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+    const char* gpu_file = "test_loadperf_gpu_kmeans.idx";
+    index.save(gpu_file);
+
+    // Benchmark CPU format load
+    double cpu_load_ms = 0;
+    for (int i = 0; i < num_runs; ++i) {
+        auto start = std::chrono::high_resolution_clock::now();
+        flann::Index<flann::L2<float>> loaded(data, flann::SavedIndexParams(cpu_file));
+        auto end = std::chrono::high_resolution_clock::now();
+        cpu_load_ms += std::chrono::duration<double, std::milli>(end - start).count();
+    }
+    cpu_load_ms /= num_runs;
+
+    // Benchmark GPU format load + warmup
+    double gpu_load_ms = 0, gpu_warmup_ms = 0;
+    for (int i = 0; i < num_runs; ++i) {
+        auto start = std::chrono::high_resolution_clock::now();
+        flann::Index<flann::L2<float>> loaded(data, flann::SavedIndexParams(gpu_file));
+        auto mid = std::chrono::high_resolution_clock::now();
+        loaded.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+        auto end = std::chrono::high_resolution_clock::now();
+        gpu_load_ms += std::chrono::duration<double, std::milli>(mid - start).count();
+        gpu_warmup_ms += std::chrono::duration<double, std::milli>(end - mid).count();
+    }
+    gpu_load_ms /= num_runs;
+    gpu_warmup_ms /= num_runs;
+
+    std::cout << "Load Performance (KMeans, avg of " << num_runs << " runs):\n"
+              << "  CPU load:     " << cpu_load_ms << " ms\n"
+              << "  GPU load:     " << gpu_load_ms << " ms\n"
+              << "  GPU warmup:   " << gpu_warmup_ms << " ms\n"
+              << "  GPU total:    " << (gpu_load_ms + gpu_warmup_ms) << " ms\n";
+
+    // GPU load includes data upload to GPU, so it may be slower than CPU load
+    // The key metric is that it completes in reasonable time (<500ms for small datasets)
+    // For larger datasets, GPU load saves time vs CPU tree reconstruction
+    EXPECT_LT(gpu_load_ms, 500.0)
+        << "GPU load too slow: " << gpu_load_ms << " ms";
+    EXPECT_LT(gpu_warmup_ms, 500.0)
+        << "GPU warmup too slow: " << gpu_warmup_ms << " ms";
+
+    remove(cpu_file);
+    remove(gpu_file);
 }
 
 int main(int argc, char** argv)
