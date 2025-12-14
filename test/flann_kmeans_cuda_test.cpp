@@ -608,6 +608,8 @@ TEST_F(KMeansCUDA_SIFT10K, TestKEqualsDatasetSize)
  */
 TEST_F(KMeansCUDA_SIFT10K, TestGPUSaveLoad)
 {
+    remove("test_kmeans_gpu_saved.idx");  // Pre-test cleanup for isolation
+
     flann::seed_random(0);
     flann::Index<flann::L2<float>> index(data,
         flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
@@ -663,6 +665,8 @@ TEST_F(KMeansCUDA_SIFT10K, TestGPUSaveLoad)
  */
 TEST_F(KMeansCUDA_SIFT10K, TestConvertToGPUFormat)
 {
+    remove("test_kmeans_converted.idx");  // Pre-test cleanup for isolation
+
     flann::seed_random(0);
     flann::Index<flann::L2<float>> index(data,
         flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
@@ -708,6 +712,10 @@ TEST_F(KMeansCUDA_SIFT10K, TestConvertToGPUFormat)
  */
 TEST_F(KMeansCUDA_SIFT10K, TestFormatDetection)
 {
+    // Pre-test cleanup for isolation
+    remove("test_kmeans_cpu_format.idx");
+    remove("test_kmeans_gpu_format.idx");
+
     flann::seed_random(0);
 
     // Create and save CPU format (without GPU init)
@@ -760,6 +768,9 @@ TEST_F(KMeansCUDA_SIFT10K, TestFormatDetection)
  */
 TEST_F(KMeansCUDA_SIFT100K, TestGPUFormatSaveAfterRemove)
 {
+    const char* filename = "test_gpu_format_after_remove_kmeans.idx";
+    remove(filename);  // Pre-test cleanup for isolation
+
     flann::seed_random(0);
     const size_t test_knn = 5;
     flann::Matrix<size_t> indices1(new size_t[query.rows*test_knn], query.rows, test_knn);
@@ -793,7 +804,6 @@ TEST_F(KMeansCUDA_SIFT100K, TestGPUFormatSaveAfterRemove)
     index.convertToGPUFormat();
 
     // Save GPU format
-    const char* filename = "test_gpu_format_after_remove_kmeans.idx";
     index.save(filename);
 
     // Load with SavedIndexParams and init GPU
@@ -830,6 +840,9 @@ TEST_F(KMeansCUDA_SIFT100K, TestGPUFormatSaveAfterRemove)
  */
 TEST_F(KMeansCUDA_SIFT100K, TestCPUFormatLoadWithGPU)
 {
+    const char* filename = "test_cpu_format_load_with_gpu_kmeans.idx";
+    remove(filename);  // Pre-test cleanup for isolation
+
     flann::seed_random(0);
     const size_t test_knn = 5;
 
@@ -847,7 +860,6 @@ TEST_F(KMeansCUDA_SIFT100K, TestCPUFormatLoadWithGPU)
     printf("CPU baseline precision: %.2f%%\n", cpu_precision * 100);
 
     // Save CPU format
-    const char* filename = "test_cpu_format_load_with_gpu_kmeans.idx";
     index.save(filename);
 
     // Load and init GPU on CPU-format file
@@ -882,6 +894,9 @@ TEST_F(KMeansCUDA_SIFT100K, TestCPUFormatLoadWithGPU)
  */
 TEST_F(KMeansCUDA_SIFT100K, TestGPUFormatSaveAfterIncrementalAdd)
 {
+    const char* filename = "test_gpu_format_after_add_kmeans.idx";
+    remove(filename);  // Pre-test cleanup for isolation
+
     flann::seed_random(0);
     const size_t test_knn = 5;
 
@@ -909,7 +924,6 @@ TEST_F(KMeansCUDA_SIFT100K, TestGPUFormatSaveAfterIncrementalAdd)
 
     // Convert and save GPU format
     index.convertToGPUFormat();
-    const char* filename = "test_gpu_format_after_add_kmeans.idx";
     index.save(filename);
 
     // Load and init GPU
@@ -1191,6 +1205,109 @@ TEST_F(KMeansCUDA_SIFT10K, TestOptimizedGPUFormatLoading)
     delete[] loaded_indices.ptr();
     delete[] loaded_dists.ptr();
     remove(gpu_file);
+}
+
+// ============================================================================
+// Test Isolation and Regression Tests
+// These tests ensure GPU save/load works correctly in isolation, independent
+// of test ordering or stale files from previous runs.
+// ============================================================================
+
+/**
+ * Regression Test: GPU format load via SavedIndexParams in isolation
+ *
+ * This test verifies that loading a GPU-format index file via SavedIndexParams
+ * works correctly WITHOUT any prior test state. The bug (fixed in load_saved_index)
+ * was that LoadArchive's destructor tried to read from the file after it had
+ * been rewound, causing a crash.
+ *
+ * This test MUST:
+ * 1. Delete any pre-existing test file BEFORE the test
+ * 2. Create a fresh GPU format file
+ * 3. Close and reopen the file (simulate fresh process)
+ * 4. Load via SavedIndexParams (the buggy code path)
+ * 5. Verify the loaded index works correctly
+ */
+TEST_F(KMeansCUDA_SIFT10K, RegressionTest_GPUFormatLoadIsolation)
+{
+    const char* filename = "test_regression_gpu_isolation_kmeans.idx";
+
+    // CRITICAL: Clean up BEFORE test to ensure isolation
+    remove(filename);
+
+    flann::seed_random(0);
+
+    // Step 1: Create and save GPU format index
+    {
+        flann::Index<flann::L2<float>> index(data,
+            flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+        index.buildIndex();
+        index.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+        ASSERT_TRUE(index.hasGPUFormat()) << "GPU format not available after buildCUDAKnnSearch";
+        index.save(filename);
+    }  // index destroyed, file closed
+
+    // Step 2: Verify file exists
+    FILE* check = fopen(filename, "rb");
+    ASSERT_NE(check, nullptr) << "GPU format file was not created";
+    fclose(check);
+
+    // Step 3: Load via SavedIndexParams (this was the buggy path)
+    // This must work without any prior CUDA context or state
+    flann::Index<flann::L2<float>> loaded(data,
+        flann::SavedIndexParams(filename));
+
+    // Step 4: Initialize GPU and search
+    loaded.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+    ASSERT_TRUE(loaded.isGPUSearchReady()) << "GPU search not ready after load";
+
+    flann::Matrix<size_t> indices_loaded(new size_t[query.rows * knn], query.rows, knn);
+    flann::Matrix<float> dists_loaded(new float[query.rows * knn], query.rows, knn);
+    loaded.knnSearch(query, indices_loaded, dists_loaded, knn, flann::SearchParams(128));
+
+    // Step 5: Verify results are valid
+    float precision = compute_precision(gt_indices, indices_loaded);
+    EXPECT_GE(precision, 0.90f) << "Loaded index precision too low: " << precision;
+    printf("Regression test precision: %.2f%%\n", precision * 100);
+
+    delete[] indices_loaded.ptr();
+    delete[] dists_loaded.ptr();
+    remove(filename);
+}
+
+/**
+ * Test: Verify GPU save/load tests can run in any order
+ * This test explicitly verifies test isolation by using a unique filename
+ * and creating a fresh index with no reliance on fixture state.
+ * Run this test first, last, and in isolation - should always pass.
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestIsolation_GPUSaveLoadIndependent)
+{
+    // Use unique filename unlikely to conflict
+    const char* filename = "test_isolation_unique_kmeans_12345.idx";
+    remove(filename);  // Pre-test cleanup
+
+    flann::seed_random(0);
+
+    // Create fresh index - minimal reliance on test fixture
+    flann::Index<flann::L2<float>> index(data,
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+    index.buildCUDAKnnSearch(10, flann::SearchParams(128));
+    ASSERT_TRUE(index.hasGPUFormat());
+    index.save(filename);
+
+    // Load from scratch via SavedIndexParams
+    flann::Index<flann::L2<float>> loaded(data,
+        flann::SavedIndexParams(filename));
+    loaded.buildCUDAKnnSearch(10, flann::SearchParams(128));
+
+    EXPECT_TRUE(loaded.isGPUSearchReady())
+        << "GPU search not ready - test isolation may be broken";
+    EXPECT_EQ(loaded.size(), data.rows)
+        << "Loaded index size mismatch";
+
+    remove(filename);
 }
 
 int main(int argc, char** argv)

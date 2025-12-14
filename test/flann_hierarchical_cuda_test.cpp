@@ -504,6 +504,8 @@ TEST_F(HierarchicalCUDA_Brief100K, TestMaximumKValue)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestGPUSaveLoad)
 {
+	remove("test_hier_gpu_saved.idx");  // Pre-test cleanup for isolation
+
 	flann::Index<Distance> index(data,
 		flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100));
 
@@ -558,6 +560,8 @@ TEST_F(HierarchicalCUDA_Brief100K, TestGPUSaveLoad)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestConvertToGPUFormat)
 {
+	remove("test_hier_converted.idx");  // Pre-test cleanup for isolation
+
 	flann::Index<Distance> index(data,
 		flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100));
 
@@ -796,6 +800,10 @@ TEST_F(HierarchicalCUDA_Brief100K, TestGPUFormatLoadPerformance)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestFormatDetection)
 {
+	// Pre-test cleanup for isolation
+	remove("test_hier_cpu_format.idx");
+	remove("test_hier_gpu_format.idx");
+
 	// Create and save CPU format (without GPU init)
 	{
 		flann::Index<Distance> index(data,
@@ -848,6 +856,9 @@ TEST_F(HierarchicalCUDA_Brief100K, TestFormatDetection)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestGPUFormatSaveAfterRemove)
 {
+	const char* filename = "test_gpu_format_after_remove_hier.idx";
+	remove(filename);  // Pre-test cleanup for isolation
+
 	const int knn = 3;
 	flann::Matrix<size_t> indices1(new size_t[query.rows*knn], query.rows, knn);
 	flann::Matrix<DistanceType> dists1(new DistanceType[query.rows*knn], query.rows, knn);
@@ -879,7 +890,6 @@ TEST_F(HierarchicalCUDA_Brief100K, TestGPUFormatSaveAfterRemove)
 	index.convertToGPUFormat();
 
 	// Save GPU format
-	const char* filename = "test_gpu_format_after_remove_hier.idx";
 	index.save(filename);
 
 	// Load with SavedIndexParams and init GPU
@@ -916,6 +926,9 @@ TEST_F(HierarchicalCUDA_Brief100K, TestGPUFormatSaveAfterRemove)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestCPUFormatLoadWithGPU)
 {
+	const char* filename = "test_cpu_format_load_with_gpu_hier.idx";
+	remove(filename);  // Pre-test cleanup for isolation
+
 	const int knn = 3;
 
 	// Build index WITHOUT GPU init (saves CPU format)
@@ -931,7 +944,6 @@ TEST_F(HierarchicalCUDA_Brief100K, TestCPUFormatLoadWithGPU)
 	printf("CPU baseline precision: %.2f%%\n", cpu_precision * 100);
 
 	// Save CPU format
-	const char* filename = "test_cpu_format_load_with_gpu_hier.idx";
 	index.save(filename);
 
 	// Load and init GPU on CPU-format file
@@ -966,6 +978,9 @@ TEST_F(HierarchicalCUDA_Brief100K, TestCPUFormatLoadWithGPU)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestGPUFormatSaveAfterIncrementalAdd)
 {
+	const char* filename = "test_gpu_format_after_add_hier.idx";
+	remove(filename);  // Pre-test cleanup for isolation
+
 	const int knn = 3;
 
 	// Split data 50/50
@@ -991,7 +1006,6 @@ TEST_F(HierarchicalCUDA_Brief100K, TestGPUFormatSaveAfterIncrementalAdd)
 
 	// Convert and save GPU format
 	index.convertToGPUFormat();
-	const char* filename = "test_gpu_format_after_add_hier.idx";
 	index.save(filename);
 
 	// Load and init GPU
@@ -1011,6 +1025,156 @@ TEST_F(HierarchicalCUDA_Brief100K, TestGPUFormatSaveAfterIncrementalAdd)
 	remove(filename);
 	delete[] indices.ptr();
 	delete[] dists.ptr();
+}
+
+// ============================================================================
+// Test Isolation and Regression Tests
+// These tests ensure GPU save/load works correctly in isolation, independent
+// of test ordering or stale files from previous runs.
+// ============================================================================
+
+/**
+ * Regression Test: GPU format load via SavedIndexParams in isolation
+ *
+ * This test verifies that loading a GPU-format index file via SavedIndexParams
+ * works correctly WITHOUT any prior test state. The bug (fixed in load_saved_index)
+ * was that LoadArchive's destructor tried to read from the file after it had
+ * been rewound, causing a crash.
+ *
+ * This test MUST:
+ * 1. Delete any pre-existing test file BEFORE the test
+ * 2. Create a fresh GPU format file
+ * 3. Close and reopen the file (simulate fresh process)
+ * 4. Load via SavedIndexParams (the buggy code path)
+ * 5. Verify the loaded index works correctly
+ */
+TEST_F(HierarchicalCUDA_Brief100K, RegressionTest_GPUFormatLoadIsolation)
+{
+	const char* filename = "test_regression_gpu_isolation_hier.idx";
+
+	// CRITICAL: Clean up BEFORE test to ensure isolation
+	remove(filename);
+
+	// Step 1: Create and save GPU format index
+	{
+		flann::Index<Distance> index(data,
+			flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100));
+		index.buildIndex();
+		index.buildCUDAKnnSearch(k_nn_, flann::SearchParams(2000));
+		ASSERT_TRUE(index.hasGPUFormat()) << "GPU format not available after buildCUDAKnnSearch";
+		index.save(filename);
+	}  // index destroyed, file closed
+
+	// Step 2: Verify file exists
+	FILE* check = fopen(filename, "rb");
+	ASSERT_NE(check, nullptr) << "GPU format file was not created";
+	fclose(check);
+
+	// Step 3: Load via SavedIndexParams (this was the buggy path)
+	// This must work without any prior CUDA context or state
+	flann::Index<Distance> loaded(data,
+		flann::SavedIndexParams(filename));
+
+	// Step 4: Initialize GPU and search
+	loaded.buildCUDAKnnSearch(k_nn_, flann::SearchParams(2000));
+	ASSERT_TRUE(loaded.isGPUSearchReady()) << "GPU search not ready after load";
+
+	flann::Matrix<size_t> indices_loaded(new size_t[query.rows * k_nn_], query.rows, k_nn_);
+	flann::Matrix<DistanceType> dists_loaded(new DistanceType[query.rows * k_nn_], query.rows, k_nn_);
+	loaded.knnSearch(query, indices_loaded, dists_loaded, k_nn_, flann::SearchParams(2000));
+
+	// Step 5: Verify results are valid
+	float precision = compute_precision(gt_indices, indices_loaded);
+	EXPECT_GE(precision, 0.80f) << "Loaded index precision too low: " << precision;
+	printf("Regression test precision: %.2f%%\n", precision * 100);
+
+	delete[] indices_loaded.ptr();
+	delete[] dists_loaded.ptr();
+	remove(filename);
+}
+
+/**
+ * Test: GPU format file I/O integrity
+ * Verifies the file I/O pattern used in load_saved_index() works correctly:
+ * - detectV2Format() peeks at signature and restores position
+ * - Header can be read directly after rewind
+ * - File can be rewound and re-read multiple times
+ */
+TEST_F(HierarchicalCUDA_Brief100K, TestGPUFormatFileIO)
+{
+	const char* filename = "test_gpu_fileio_hier.idx";
+	remove(filename);  // Pre-test cleanup
+
+	// Create GPU format file
+	{
+		flann::Index<Distance> index(data,
+			flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100));
+		index.buildIndex();
+		index.buildCUDAKnnSearch(k_nn_, flann::SearchParams(2000));
+		index.save(filename);
+	}
+
+	// Test file I/O pattern manually
+	FILE* fin = fopen(filename, "rb");
+	ASSERT_NE(fin, nullptr) << "Failed to open GPU format file";
+
+	// Step 1: Detect GPU format (reads signature, should restore position)
+	EXPECT_TRUE(flann::GPUIndexHeaderV2::detectV2Format(fin))
+		<< "Failed to detect GPU v2.0 format";
+
+	// Step 2: Read header directly (like fixed code does)
+	rewind(fin);
+	flann::GPUIndexHeaderV2Struct header;
+	EXPECT_EQ(fread(&header, sizeof(header), 1, fin), 1u)
+		<< "Failed to read GPU header";
+
+	// Step 3: Verify header fields
+	EXPECT_EQ(header.rows, data.rows) << "Header rows mismatch";
+	EXPECT_EQ(header.cols, data.cols) << "Header cols mismatch";
+
+	// Step 4: Rewind and verify we can read again
+	rewind(fin);
+	flann::GPUIndexHeaderV2Struct header2;
+	EXPECT_EQ(fread(&header2, sizeof(header2), 1, fin), 1u)
+		<< "Failed to re-read GPU header after rewind";
+	EXPECT_EQ(header.rows, header2.rows) << "Header changed after rewind";
+	EXPECT_EQ(header.cols, header2.cols) << "Header changed after rewind";
+
+	fclose(fin);
+	remove(filename);
+}
+
+/**
+ * Test: Verify GPU save/load tests can run in any order
+ * This test explicitly verifies test isolation by using a unique filename
+ * and creating a fresh index with no reliance on fixture state.
+ * Run this test first, last, and in isolation - should always pass.
+ */
+TEST_F(HierarchicalCUDA_Brief100K, TestIsolation_GPUSaveLoadIndependent)
+{
+	// Use unique filename unlikely to conflict
+	const char* filename = "test_isolation_unique_hier_12345.idx";
+	remove(filename);  // Pre-test cleanup
+
+	// Create fresh index - minimal reliance on test fixture
+	flann::Index<Distance> index(data,
+		flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100));
+	index.buildIndex();
+	index.buildCUDAKnnSearch(10, flann::SearchParams(2000));
+	ASSERT_TRUE(index.hasGPUFormat());
+	index.save(filename);
+
+	// Load from scratch via SavedIndexParams
+	flann::Index<Distance> loaded(data,
+		flann::SavedIndexParams(filename));
+	loaded.buildCUDAKnnSearch(10, flann::SearchParams(2000));
+
+	EXPECT_TRUE(loaded.isGPUSearchReady())
+		<< "GPU search not ready - test isolation may be broken";
+	EXPECT_EQ(loaded.size(), data.rows)
+		<< "Loaded index size mismatch";
+
+	remove(filename);
 }
 
 int main(int argc, char** argv)
