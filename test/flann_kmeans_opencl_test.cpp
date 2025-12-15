@@ -1,3 +1,30 @@
+/**
+ * @file flann_kmeans_opencl_test.cpp
+ * @brief K-Means OpenCL GPU acceleration tests
+ *
+ * TEST COVERAGE NOTES:
+ * --------------------
+ * These tests provide basic coverage for OpenCL K-Means functionality.
+ * Compared to CUDA tests (flann_kmeans_cuda_test.cpp), the following are NOT covered:
+ *
+ *   - K-value coverage tests (only default k tested, not k=1,2,4,5,7,8,10,16,20,32,50,64,100)
+ *   - Edge case tests (k=0, k > dataset size)
+ *   - GPU format save/load tests (GPU v2.0 format)
+ *   - Test isolation/regression tests
+ *   - Performance benchmarks
+ *
+ * PRECISION THRESHOLD:
+ * --------------------
+ * OpenCL tests use 75% precision threshold vs CUDA's 96%. This is due to:
+ *   - OpenCL uses branching=7 (not power-of-2) vs CUDA's branching=32
+ *   - Different cooperative kernel optimizations
+ *   - OpenCL precision parity investigation deferred to future MR
+ *
+ * FUTURE WORK:
+ * ------------
+ * A future MR should port comprehensive test coverage from CUDA tests.
+ */
+
 #define FLANN_USE_OPENCL
 #include <gtest/gtest.h>
 #include <time.h>
@@ -11,12 +38,6 @@ using namespace flann;
 
 /**
  * Test fixture for SIFT 10K dataset
- *
- * Note on precision thresholds: OpenCL tests use 75% precision threshold vs CUDA's 95%.
- * This difference is explained by different test parameters:
- * - OpenCL uses branching=7, which is not power-of-2 and has different characteristics
- * - CUDA uses branching=32, which is optimized for the cooperative kernel with LOC_SIZE=128
- * The 75% threshold is appropriate for the OpenCL configuration.
  */
 class KMeansOpenCL_SIFT10K : public DatasetTestFixture<float, float> {
 protected:

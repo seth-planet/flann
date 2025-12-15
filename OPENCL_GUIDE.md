@@ -192,6 +192,26 @@ Both OpenCL and CUDA backends provide GPU acceleration. This section compares th
 
 ---
 
+## Thread Safety
+
+**OpenCL indices are NOT thread-safe for concurrent searches.** A single index instance should not be used from multiple threads simultaneously.
+
+**Recommended Patterns:**
+- Create one index per thread
+- Or serialize access with a mutex
+
+```cpp
+// WRONG - concurrent access may cause undefined behavior
+std::thread t1([&index]{ index.knnSearch(...); });
+std::thread t2([&index]{ index.knnSearch(...); });
+
+// CORRECT - each thread has its own index
+std::thread t1([&]{ auto idx = createIndex(); idx.knnSearch(...); });
+std::thread t2([&]{ auto idx = createIndex(); idx.knnSearch(...); });
+```
+
+---
+
 ## Known Limitations
 
 1. **Cleanup Segfault:** Tests may segfault during global teardown (AFTER completion). This does not affect correctness or functionality - it's a destructor exception issue in C++11+ mode.

@@ -32,6 +32,8 @@
 #ifdef FLANN_USE_CUDA
 
 #include <cuda_runtime.h>
+#include <cstdio>   // For fprintf/stderr
+#include <cstring>  // For std::memcpy
 #include <stdexcept>
 #include <string>
 #include <utility>  // std::move
@@ -150,10 +152,16 @@ public:
 
     /**
      * @brief Destructor: free device memory
+     * Note: Logs errors to stderr since destructors cannot throw
      */
     ~CUDABuffer() {
         if (ptr_) {
-            cudaFree(ptr_);  // Error ignored (destructor can't throw)
+            cudaError_t err = cudaFree(ptr_);
+            if (err != cudaSuccess) {
+                // Log error to stderr - destructor can't throw but shouldn't silently fail
+                fprintf(stderr, "WARNING: cudaFree failed in CUDABuffer destructor: %s\n",
+                        cudaGetErrorString(err));
+            }
         }
     }
 
@@ -244,7 +252,10 @@ public:
         }
         // For byte-sized types, use cudaMemset
         if (sizeof(T) == 1) {
-            CUDA_CHECK(cudaMemset(ptr_, *reinterpret_cast<const unsigned char*>(&value), count));
+            // Use memcpy to avoid strict aliasing violation (UB via reinterpret_cast)
+            unsigned char byte_val;
+            std::memcpy(&byte_val, &value, 1);
+            CUDA_CHECK(cudaMemset(ptr_, byte_val, count));
         } else {
             // For other types, upload repeated pattern
             std::vector<T> pattern(count, value);
@@ -375,11 +386,16 @@ public:
 
     /**
      * @brief Destructor: free pinned or regular memory
+     * Note: Logs errors to stderr since destructors cannot throw
      */
     ~PinnedBuffer() {
         if (ptr_) {
             if (is_pinned_) {
-                cudaFreeHost(ptr_);  // Error ignored (destructor can't throw)
+                cudaError_t err = cudaFreeHost(ptr_);
+                if (err != cudaSuccess) {
+                    fprintf(stderr, "WARNING: cudaFreeHost failed in PinnedBuffer destructor: %s\n",
+                            cudaGetErrorString(err));
+                }
             } else {
                 free(ptr_);
             }

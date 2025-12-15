@@ -35,10 +35,9 @@
 #include <vector>
 #include <memory>
 #include <cstring>
+#include <cstdint>
 #include <cuda_runtime.h>
-#ifndef NDEBUG
 #include <atomic>
-#endif
 
 #include "flann/algorithms/kmeans_index.h"
 #include "flann/algorithms/cuda/cuda_utils.h"
@@ -959,8 +958,7 @@ protected:
             throw FLANNException("Index not built or GPU data not uploaded");
         }
 
-#ifndef NDEBUG
-        // Thread safety check (debug builds only)
+        // Thread safety check (all builds - concurrent GPU searches cause corruption)
         bool expected = false;
         if (!search_in_progress_.compare_exchange_strong(expected, true)) {
             throw FLANNException("Concurrent search detected - KMeansCUDAIndex is NOT thread-safe. "
@@ -971,7 +969,6 @@ protected:
             std::atomic<bool>& flag;
             ~SearchGuard() { flag.store(false, std::memory_order_release); }
         } guard{search_in_progress_};
-#endif
 
         size_t num_queries = queries.rows;
 
@@ -1235,8 +1232,11 @@ protected:
         num_nodes_ = node_variance.size();
 
         // ========================================================================
-        // Prepare dataset (with padding)
+        // Prepare dataset (with padding) - check for overflow
         // ========================================================================
+        if (this->size_ > SIZE_MAX / padded_veclen_) {
+            throw FLANNException("Dataset too large - size * padded_veclen would overflow");
+        }
         size_t dataset_size = this->size_ * padded_veclen_;
         std::vector<ElementType> padded_data(dataset_size);
         for (size_t i = 0; i < this->size_; ++i) {
@@ -1254,13 +1254,27 @@ protected:
         // Layout: [node_index | node_variance | tree_pivots | dataset]
         // ========================================================================
         size_t unified_size = node_index.size();
+
+        // Check for overflow in workspace calculations
+        if (num_nodes_ > SIZE_MAX / padded_veclen_) {
+            throw FLANNException("Tree too large - pivots size would overflow");
+        }
         size_t pivots_size = num_nodes_ * padded_veclen_;
 
         size_t offset_node_index = 0;
         workspace_offset_variance_ = alignTo16(offset_node_index + unified_size * sizeof(int));
         workspace_offset_pivots_ = alignTo16(workspace_offset_variance_ + num_nodes_ * sizeof(float));
         workspace_offset_dataset_ = alignTo16(workspace_offset_pivots_ + pivots_size * sizeof(ElementType));
-        size_t total_workspace_size = workspace_offset_dataset_ + dataset_size * sizeof(ElementType);
+
+        // Check final workspace size for overflow
+        if (dataset_size > SIZE_MAX / sizeof(ElementType)) {
+            throw FLANNException("Dataset too large - workspace size would overflow");
+        }
+        size_t dataset_bytes = dataset_size * sizeof(ElementType);
+        if (workspace_offset_dataset_ > SIZE_MAX - dataset_bytes) {
+            throw FLANNException("Total workspace size would overflow");
+        }
+        size_t total_workspace_size = workspace_offset_dataset_ + dataset_bytes;
 
         // ========================================================================
         // Pack all arrays into single pinned host buffer
@@ -1560,10 +1574,9 @@ private:
     mutable bool gpu_search_ready_;
     bool gpu_only_mode_;  // True if loaded with gpu_only=true (points_ not available)
 
-#ifndef NDEBUG
-    // Thread safety detection (debug builds only)
+    // Thread safety detection (enabled in all builds to prevent GPU corruption)
     mutable std::atomic<bool> search_in_progress_{false};
-#endif
+
     mutable size_t num_nodes_;
     mutable size_t leaf_count_;      // Number of leaf nodes (for heap size calculation)
     mutable size_t padded_veclen_;

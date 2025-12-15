@@ -34,11 +34,10 @@
 #include <queue>
 #include <utility>  // For std::swap
 #include <cstring>  // For memcpy
+#include <cstdint>  // For SIZE_MAX
 #include <memory>   // For std::unique_ptr
 #include <cuda_runtime.h>
-#ifndef NDEBUG
 #include <atomic>
-#endif
 
 #include "flann/algorithms/hierarchical_clustering_index.h"
 #include "flann/algorithms/cuda/cuda_utils.h"
@@ -1006,10 +1005,31 @@ protected:
         // Calculate workspace layout with 16-byte alignment
         // Layout: [dataset | node_index]
         // ========================================================================
+
+        // Check for overflow in dataset size calculation
+        if (this->size_ > SIZE_MAX / padded_veclen) {
+            throw FLANNException("Dataset too large - size * padded_veclen would overflow");
+        }
         size_t dataset_size = this->size_ * padded_veclen;
+
+        // Check for overflow in workspace calculations
+        if (dataset_size > SIZE_MAX / sizeof(ElementType)) {
+            throw FLANNException("Dataset too large - dataset bytes would overflow");
+        }
+        size_t dataset_bytes = dataset_size * sizeof(ElementType);
+
         size_t offset_dataset = 0;
-        workspace_offset_node_index_ = alignTo16(offset_dataset + dataset_size * sizeof(ElementType));
-        size_t total_workspace_size = workspace_offset_node_index_ + hybrid_size * sizeof(int);
+        workspace_offset_node_index_ = alignTo16(offset_dataset + dataset_bytes);
+
+        // Check for final workspace size overflow
+        if (hybrid_size > SIZE_MAX / sizeof(int)) {
+            throw FLANNException("Node index too large - would overflow");
+        }
+        size_t node_index_bytes = hybrid_size * sizeof(int);
+        if (workspace_offset_node_index_ > SIZE_MAX - node_index_bytes) {
+            throw FLANNException("Total workspace size would overflow");
+        }
+        size_t total_workspace_size = workspace_offset_node_index_ + node_index_bytes;
 
         // ========================================================================
         // Pack all arrays into single PINNED host buffer for fast DMA transfer
@@ -1018,10 +1038,10 @@ protected:
 
         std::memcpy(workspace_host.get() + offset_dataset,
                    dataset_host.data(),
-                   dataset_size * sizeof(ElementType));
+                   dataset_bytes);
         std::memcpy(workspace_host.get() + workspace_offset_node_index_,
                    hybrid_node_index.data(),
-                   hybrid_size * sizeof(int));
+                   node_index_bytes);
 
         // ========================================================================
         // SINGLE GPU upload (1 cudaMalloc + 1 cudaMemcpy) - THE KEY OPTIMIZATION
@@ -1091,8 +1111,7 @@ protected:
             throw FLANNException("Index not built or GPU data not uploaded");
         }
 
-#ifndef NDEBUG
-        // Thread safety check (debug builds only)
+        // Thread safety check (all builds - concurrent GPU searches cause corruption)
         bool expected = false;
         if (!search_in_progress_.compare_exchange_strong(expected, true)) {
             throw FLANNException("Concurrent search detected - HierarchicalCUDAIndex is NOT thread-safe. "
@@ -1103,7 +1122,6 @@ protected:
             std::atomic<bool>& flag;
             ~SearchGuard() { flag.store(false, std::memory_order_release); }
         } guard{search_in_progress_};
-#endif
 
         size_t num_queries = queries.rows;
 
@@ -1243,10 +1261,9 @@ private:
     bool gpu_search_ready_;     ///< True if buildCUDAKnnSearch() was called
     bool gpu_only_mode_;        ///< True if loaded with gpu_only=true (points_ not available)
 
-#ifndef NDEBUG
-    // Thread safety detection (debug builds only)
+    // Thread safety detection (enabled in all builds to prevent GPU corruption)
     mutable std::atomic<bool> search_in_progress_{false};
-#endif
+
     int gpu_num_trees_;         ///< Number of trees (tree roots are nodes 0..num_trees-1)
     int gpu_num_nodes_;         ///< Number of tree nodes (needed for kernel)
     mutable size_t gpu_padded_bytes_;  ///< Padded descriptor size (for aligned access)

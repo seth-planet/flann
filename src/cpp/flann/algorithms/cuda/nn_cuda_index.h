@@ -33,6 +33,8 @@
 #define FLANN_NN_CUDA_INDEX_H_
 
 #include <cuda_runtime.h>
+#include <string>
+#include <flann/general.h>
 
 namespace flann {
 namespace cuda {
@@ -84,9 +86,19 @@ protected:
     /**
      * Set the CUDA device to use for this index
      * @param device Device ID (0-based)
+     * @throws FLANNException if device selection fails
      */
     void setCUDADevice(int device) {
-        cuda_device_ = device;
+        if (device != cuda_device_) {
+            cudaError_t err = cudaSetDevice(device);
+            if (err != cudaSuccess) {
+                throw FLANNException(
+                    std::string("Failed to set CUDA device ") + std::to_string(device) +
+                    ": " + cudaGetErrorString(err)
+                );
+            }
+            cuda_device_ = device;
+        }
     }
 
     /**

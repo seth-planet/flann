@@ -450,10 +450,18 @@ index.buildCUDAKnnSearch(17, params);  // THROWS FLANNException!
 
 ### 8. Thread Safety
 
-**CUDA indices are NOT thread-safe for concurrent searches.** A single index instance should not be used from multiple threads simultaneously.
+**CUDA indices are NOT thread-safe for concurrent searches.** A single index instance should not be used from multiple threads simultaneously. Concurrent GPU searches can cause silent data corruption.
+
+**Runtime Detection:** The library includes runtime detection of concurrent access. If a concurrent search is attempted, a `FLANNException` will be thrown:
+
+```
+Concurrent search detected - KMeansCUDAIndex is NOT thread-safe. Each thread should have its own index instance.
+```
+
+**Recommended Patterns:**
 
 ```cpp
-// WRONG - concurrent access causes undefined behavior
+// WRONG - concurrent access throws FLANNException
 std::thread t1([&index]{ index.knnSearch(...); });
 std::thread t2([&index]{ index.knnSearch(...); });
 
@@ -467,6 +475,11 @@ auto createIndex = [&dataset]() {
 
 std::thread t1([&]{ auto idx = createIndex(); idx.knnSearch(...); });
 std::thread t2([&]{ auto idx = createIndex(); idx.knnSearch(...); });
+
+// ALTERNATIVE - serialize access with mutex
+std::mutex index_mutex;
+std::thread t1([&]{ std::lock_guard<std::mutex> lock(index_mutex); index.knnSearch(...); });
+std::thread t2([&]{ std::lock_guard<std::mutex> lock(index_mutex); index.knnSearch(...); });
 ```
 
 ---

@@ -1,3 +1,28 @@
+/**
+ * @file flann_hierarchical_opencl_test.cpp
+ * @brief Hierarchical Clustering OpenCL GPU acceleration tests
+ *
+ * TEST COVERAGE NOTES:
+ * --------------------
+ * These tests provide basic coverage for OpenCL Hierarchical Clustering functionality.
+ * Compared to CUDA tests (flann_hierarchical_cuda_test.cpp), the following are NOT covered:
+ *
+ *   - K-value coverage tests (only default k tested)
+ *   - Edge case tests (k=0, large k values)
+ *   - GPU format save/load tests (GPU v2.0 format)
+ *   - Test isolation/regression tests
+ *   - Performance benchmarks
+ *
+ * PRECISION THRESHOLD:
+ * --------------------
+ * OpenCL tests use 87-90% precision threshold vs CUDA's 93-94%.
+ * OpenCL precision parity investigation deferred to future MR.
+ *
+ * FUTURE WORK:
+ * ------------
+ * A future MR should port comprehensive test coverage from CUDA tests.
+ */
+
 #define FLANN_USE_OPENCL
 #include <gtest/gtest.h>
 #include <time.h>
