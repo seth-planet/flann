@@ -142,6 +142,56 @@ sudo apt-get install ocl-icd-opencl-dev opencl-headers
 - Review kernel build logs in error messages
 - Some older GPUs may have work group size limitations
 
+## OpenCL vs CUDA Comparison (December 2024)
+
+Both OpenCL and CUDA backends provide GPU acceleration. This section compares their performance using the same CPU index files with proper warmup queries.
+
+**Methodology:** All benchmarks use `scripts/benchmark_comprehensive.cpp` with:
+- 2 warmup runs (discarded from timing)
+- 5 timed runs (statistics reported)
+- Same CPU index construction for both backends
+- Ground truth computed via brute-force linear search
+
+```bash
+# Run OpenCL vs CUDA comparison
+./test/benchmark_comprehensive datasets/brief100K.h5 --gpu-only --warmup=2 --runs=5
+./test/benchmark_comprehensive datasets/sift100K.h5 --kmeans --gpu-only --warmup=2 --runs=5
+```
+
+### Binary Hierarchical (brief100K - 100K × 32 bytes, Hamming)
+
+| Metric | OpenCL | CUDA | Notes |
+|--------|--------|------|-------|
+| Build time (CPU) | 0.303s ± 0.008 | 0.305s ± 0.002 | Equal |
+| GPU Upload | 0.357s | 0.014s | CUDA 25x faster |
+| Search (warm) | 0.005s | 0.005s | Equal |
+| Precision | 81.7% | 89.7% | CUDA +8% |
+| Throughput | 208,928 q/s | 182,498 q/s | OpenCL slightly higher |
+
+### Float K-Means (sift100K - 99K × 128 floats, L2)
+
+| Metric | OpenCL | CUDA | Notes |
+|--------|--------|------|-------|
+| Build time (CPU) | 10.74s ± 0.16 | 10.83s ± 0.11 | Equal |
+| GPU Upload | 0.493s | 0.152s | CUDA 3.2x faster |
+| Search (warm) | 0.012s | 0.010s | CUDA 17% faster |
+| Precision | 77.2% | 88.4% | CUDA +11% |
+| Throughput | 86,238 q/s | 97,194 q/s | CUDA 13% higher |
+
+### When to Choose OpenCL
+
+| Use Case | Recommendation |
+|----------|----------------|
+| AMD/Intel GPUs | **OpenCL** - only option |
+| Multi-vendor deployment | **OpenCL** - portable |
+| NVIDIA with max precision | **CUDA** - 8-11% better recall |
+| NVIDIA with fast upload | **CUDA** - 3-25x faster upload |
+| Cross-platform compatibility | **OpenCL** - runs everywhere |
+
+**Key Insight:** OpenCL provides multi-vendor support with competitive search throughput. CUDA offers faster GPU upload and higher precision on NVIDIA hardware.
+
+---
+
 ## Known Limitations
 
 1. **Cleanup Segfault:** Tests may segfault during global teardown (AFTER completion). This does not affect correctness or functionality - it's a destructor exception issue in C++11+ mode.
@@ -149,6 +199,8 @@ sudo apt-get install ocl-icd-opencl-dev opencl-headers
 2. **Memory Overhead:** Dataset is duplicated in GPU memory. Large datasets may exceed GPU memory limits.
 
 3. **Binary Format:** OpenCL kernels are compiled at runtime. First search incurs ~0.3-1.0s compilation overhead.
+
+4. **Precision Gap:** OpenCL achieves 77-82% precision vs CUDA's 88-90% due to differences in tree traversal optimizations.
 
 ## Implementation Details
 

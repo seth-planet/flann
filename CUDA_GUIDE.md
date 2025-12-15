@@ -295,6 +295,53 @@ index.knnSearch(queries, indices, distances, k, params);
 
 **Test Coverage:** All CUDA tests passing
 
+### CUDA vs OpenCL Comparison (December 2024)
+
+Both CUDA and OpenCL backends are available for GPU acceleration. This section compares their performance using the same CPU index files with proper warmup queries.
+
+**Methodology:** All benchmarks use `scripts/benchmark_comprehensive.cpp` with:
+- 2 warmup runs (discarded from timing)
+- 5 timed runs (statistics reported)
+- Same CPU index construction for both backends
+- Ground truth computed via brute-force linear search
+
+```bash
+# Run OpenCL vs CUDA comparison
+./test/benchmark_comprehensive datasets/brief100K.h5 --gpu-only --warmup=2 --runs=5
+./test/benchmark_comprehensive datasets/sift100K.h5 --kmeans --gpu-only --warmup=2 --runs=5
+```
+
+#### Binary Hierarchical (brief100K - 100K × 32 bytes, Hamming)
+
+| Metric | OpenCL | CUDA | Winner |
+|--------|--------|------|--------|
+| Build time (CPU) | 0.303s ± 0.008 | 0.305s ± 0.002 | ~Equal |
+| **GPU Upload** | **0.357s** | **0.014s** | **CUDA 25x faster** |
+| Search (warm) | 0.005s | 0.005s | ~Equal |
+| **Precision** | **81.7%** | **89.7%** | **CUDA +8%** |
+| Throughput | 208,928 q/s | 182,498 q/s | OpenCL slightly higher |
+
+#### Float K-Means (sift100K - 99K × 128 floats, L2)
+
+| Metric | OpenCL | CUDA | Winner |
+|--------|--------|------|--------|
+| Build time (CPU) | 10.74s ± 0.16 | 10.83s ± 0.11 | ~Equal |
+| **GPU Upload** | **0.493s** | **0.152s** | **CUDA 3.2x faster** |
+| Search (warm) | 0.012s | 0.010s | CUDA 17% faster |
+| **Precision** | **77.2%** | **88.4%** | **CUDA +11%** |
+| Throughput | 86,238 q/s | 97,194 q/s | CUDA 13% higher |
+
+#### Key Takeaways
+
+| Aspect | CUDA Advantage | Notes |
+|--------|----------------|-------|
+| **GPU Upload** | 3-25x faster | CUDA's optimized memory transfer |
+| **Precision** | +8-11% higher | Better search coverage |
+| **Search Speed** | ~Equal to 17% faster | Similar post-warmup |
+| **Hardware** | NVIDIA only | OpenCL supports AMD/Intel |
+
+**Recommendation:** Use CUDA when NVIDIA hardware is available; use OpenCL for multi-vendor support or AMD/Intel GPUs.
+
 ---
 
 ## Disadvantages and Limitations
