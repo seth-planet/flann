@@ -478,6 +478,142 @@ inline int getCUDALocSize(int device_id = 0)
     return 128;
 }
 
+/**
+ * @brief RAII wrapper for CUDA streams
+ *
+ * Manages lifecycle of CUDA streams with automatic cleanup.
+ * Supports move semantics but prohibits copying.
+ *
+ * Intended for use with ThreadLocalStreamPool to provide
+ * per-thread streams for concurrent GPU operations.
+ *
+ * @code
+ * CUDAStream stream(cudaStreamNonBlocking);
+ * kernel<<<grid, block, 0, stream.get()>>>(args);
+ * stream.synchronize();
+ * // Automatic cleanup on scope exit
+ * @endcode
+ */
+class CUDAStream {
+public:
+    /**
+     * @brief Create a new CUDA stream
+     * @param flags Stream creation flags (default: cudaStreamNonBlocking)
+     * @throws FLANNException if stream creation fails
+     */
+    explicit CUDAStream(unsigned int flags = cudaStreamNonBlocking)
+        : stream_(nullptr)
+    {
+        cudaError_t err = cudaStreamCreateWithFlags(&stream_, flags);
+        if (err != cudaSuccess) {
+            throw FLANNException(
+                std::string("Failed to create CUDA stream: ") +
+                cudaGetErrorString(err)
+            );
+        }
+    }
+
+    /**
+     * @brief Destructor: destroy the stream
+     * Note: Logs errors to stderr since destructors cannot throw
+     */
+    ~CUDAStream() {
+        if (stream_) {
+            cudaError_t err = cudaStreamDestroy(stream_);
+            if (err != cudaSuccess) {
+                fprintf(stderr, "WARNING: cudaStreamDestroy failed in CUDAStream destructor: %s\n",
+                        cudaGetErrorString(err));
+            }
+        }
+    }
+
+    // Disable copy (prevent double-destroy)
+    CUDAStream(const CUDAStream&) = delete;
+    CUDAStream& operator=(const CUDAStream&) = delete;
+
+    // Enable move
+    CUDAStream(CUDAStream&& other) noexcept
+        : stream_(other.stream_)
+    {
+        other.stream_ = nullptr;
+    }
+
+    CUDAStream& operator=(CUDAStream&& other) noexcept {
+        if (this != &other) {
+            if (stream_) cudaStreamDestroy(stream_);
+            stream_ = other.stream_;
+            other.stream_ = nullptr;
+        }
+        return *this;
+    }
+
+    /**
+     * @brief Get the raw CUDA stream handle
+     * @return cudaStream_t handle (may be nullptr if moved-from)
+     */
+    cudaStream_t get() const { return stream_; }
+
+    /**
+     * @brief Synchronize on this stream
+     * @throws FLANNException if synchronization fails
+     */
+    void synchronize() const {
+        if (stream_) {
+            cudaError_t err = cudaStreamSynchronize(stream_);
+            if (err != cudaSuccess) {
+                throw FLANNException(
+                    std::string("CUDA stream synchronization failed: ") +
+                    cudaGetErrorString(err)
+                );
+            }
+        }
+    }
+
+    /**
+     * @brief Check if stream is valid
+     */
+    explicit operator bool() const { return stream_ != nullptr; }
+
+private:
+    cudaStream_t stream_;
+};
+
+/**
+ * @brief Thread-local CUDA stream pool
+ *
+ * Provides per-thread CUDA streams for concurrent GPU operations.
+ * Each thread gets its own stream, created on first access and
+ * destroyed when the thread terminates.
+ *
+ * Benefits:
+ * - No stream contention between threads
+ * - Full GPU parallelism for concurrent searches
+ * - Stream creation cost amortized (only on first call per thread)
+ *
+ * Usage:
+ * @code
+ * cudaStream_t stream = ThreadLocalStreamPool::getStream();
+ * kernel<<<grid, block, 0, stream>>>(args);
+ * cudaStreamSynchronize(stream);
+ * @endcode
+ */
+class ThreadLocalStreamPool {
+public:
+    /**
+     * @brief Get the CUDA stream for the current thread
+     *
+     * Creates a new stream on first call per thread.
+     * Subsequent calls return the same stream.
+     *
+     * @return cudaStream_t handle for thread-local stream
+     */
+    static cudaStream_t getStream() {
+        // Thread-local stream, created once per thread, destroyed on thread exit
+        thread_local CUDAStream stream(cudaStreamNonBlocking);
+        return stream.get();
+    }
+};
+
 } // namespace cuda
 } // namespace flann
 

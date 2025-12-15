@@ -33,8 +33,10 @@
 #define FLANN_NN_CUDA_INDEX_H_
 
 #include <cuda_runtime.h>
+#include <shared_mutex>  // C++17: std::shared_mutex for reader-writer locking
 #include <string>
 #include <flann/general.h>
+#include "cuda_utils.h"  // For ThreadLocalStreamPool
 
 namespace flann {
 namespace cuda {
@@ -43,8 +45,13 @@ namespace cuda {
  * Base class for CUDA-accelerated indices.
  *
  * Provides common infrastructure for CUDA indices, including
- * device management and stream handling. Uses RAII pattern
- * (via CUDABuffer) for all GPU resource management.
+ * device management, stream handling, and thread safety primitives.
+ * Uses RAII pattern (via CUDABuffer) for all GPU resource management.
+ *
+ * Thread Safety:
+ * - Multiple concurrent searches (knnSearch) are supported via shared_mutex
+ * - Mutations (addPoints, removePoint, uploadToGPU) acquire exclusive lock
+ * - Each thread gets its own CUDA stream via ThreadLocalStreamPool
  *
  * This class follows the same pattern as OpenCLIndex to enable
  * dual inheritance for seamless CPU→GPU index conversion.
@@ -109,6 +116,24 @@ protected:
             cudaStreamCreate(&cuda_stream_);
         }
     }
+
+    /**
+     * Get the thread-local CUDA stream for concurrent searches
+     *
+     * Each thread gets its own stream, enabling concurrent GPU operations
+     * without stream contention. Streams are created on first access and
+     * cached for the thread's lifetime.
+     *
+     * @return cudaStream_t handle for current thread's stream
+     */
+    static cudaStream_t getThreadStream() {
+        return ThreadLocalStreamPool::getStream();
+    }
+
+    /// Reader-writer lock for thread-safe concurrent searches
+    /// - Shared lock: multiple concurrent searches (knnSearch)
+    /// - Exclusive lock: mutations (addPoints, removePoint, uploadToGPU)
+    mutable std::shared_mutex rw_lock_;
 
 private:
     int cuda_device_;           ///< CUDA device ID (-1 = not set)

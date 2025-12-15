@@ -37,7 +37,7 @@
 #include <cstdint>  // For SIZE_MAX
 #include <memory>   // For std::unique_ptr
 #include <cuda_runtime.h>
-#include <atomic>
+#include <shared_mutex>  // For std::shared_lock, std::unique_lock
 
 #include "flann/algorithms/hierarchical_clustering_index.h"
 #include "flann/algorithms/cuda/cuda_utils.h"
@@ -66,7 +66,8 @@ bool launch_hierarchical_search_cooperative(
     size_t num_nodes,
     int k,
     int num_trees,
-    int branching);
+    int branching,
+    cudaStream_t stream = nullptr);
 
 // Forward declare padding kernel launcher (default args in kmeans_cuda_index.h)
 template<typename T>
@@ -103,10 +104,10 @@ struct HierarchicalCUDAIndexParams : public HierarchicalClusteringIndexParams
  * GPU-accelerated version of hierarchical clustering for binary descriptors.
  * Uses Hamming distance for similarity computation.
  *
- * THREAD SAFETY: This index is NOT thread-safe for concurrent searches.
- * A single index instance should not be used from multiple threads
- * simultaneously. Each thread should have its own index instance,
- * or external synchronization must be used.
+ * THREAD SAFETY: This index IS thread-safe for concurrent searches.
+ * Multiple threads can safely call knnSearch() / knnSearchGPU() on
+ * the same index instance. Mutations (addPoints, removePoint) acquire
+ * exclusive lock and block all searches during modification.
  *
  * **Architecture:**
  * - Dual inheritance from HierarchicalClusteringIndex (CPU) and CUDAIndex (GPU marker)
@@ -290,6 +291,9 @@ public:
      */
     void buildCUDAKnnSearch(int knn, const SearchParams& params = SearchParams())
     {
+        // Acquire exclusive lock - blocks all concurrent searches during GPU setup
+        std::unique_lock<std::shared_mutex> lock(this->rw_lock_);
+
         // Allow case where GPU is already initialized from loading GPU format file
         if (this->tree_roots_.empty() && !gpu_initialized_) {
             throw FLANNException("Cannot prepare GPU search: index not built yet. "
@@ -308,7 +312,7 @@ public:
         }
 
         if (!gpu_initialized_) {
-            uploadToGPU();
+            uploadToGPUInternal();  // Internal version without lock
         }
 
         // Warmup kernel launch to trigger JIT compilation and CUDA memory pool initialization
@@ -468,6 +472,7 @@ public:
     /**
      * @brief Invalidate GPU data structures after adding points
      *
+     * Thread-safe: acquires exclusive lock, blocking all concurrent searches.
      * Adding points changes the tree structure, so GPU buffers must be rebuilt.
      *
      * @throws FLANNException if index is in GPU-only mode
@@ -479,12 +484,16 @@ public:
                 "addPoints() not supported in GPU-only mode.\n"
                 "Reload with loadIndexV2(stream, false) to enable dynamic updates.");
         }
+        // Acquire exclusive lock - blocks all concurrent searches
+        std::unique_lock<std::shared_mutex> lock(this->rw_lock_);
         freeGPUMemory();
         BaseClass::addPoints(points, rebuild_threshold);
     }
 
     /**
      * @brief Invalidate GPU data structures after removing a point
+     *
+     * Thread-safe: acquires exclusive lock, blocking all concurrent searches.
      *
      * @throws FLANNException if index is in GPU-only mode
      */
@@ -495,6 +504,8 @@ public:
                 "removePoint() not supported in GPU-only mode.\n"
                 "Reload with loadIndexV2(stream, false) to enable dynamic updates.");
         }
+        // Acquire exclusive lock - blocks all concurrent searches
+        std::unique_lock<std::shared_mutex> lock(this->rw_lock_);
         freeGPUMemory();
         BaseClass::removePoint(id);
     }
@@ -831,6 +842,17 @@ protected:
      */
     void uploadToGPU()
     {
+        std::unique_lock<std::shared_mutex> lock(this->rw_lock_);
+        uploadToGPUInternal();
+    }
+
+    /**
+     * @brief Internal GPU upload (assumes lock held)
+     *
+     * Note: Caller must hold exclusive lock (rw_lock_).
+     */
+    void uploadToGPUInternal()
+    {
         if (gpu_initialized_) {
             return;  // Already uploaded
         }
@@ -1111,17 +1133,12 @@ protected:
             throw FLANNException("Index not built or GPU data not uploaded");
         }
 
-        // Thread safety check (all builds - concurrent GPU searches cause corruption)
-        bool expected = false;
-        if (!search_in_progress_.compare_exchange_strong(expected, true)) {
-            throw FLANNException("Concurrent search detected - HierarchicalCUDAIndex is NOT thread-safe. "
-                "Each thread should have its own index instance.");
-        }
-        // RAII guard to reset flag on exit
-        struct SearchGuard {
-            std::atomic<bool>& flag;
-            ~SearchGuard() { flag.store(false, std::memory_order_release); }
-        } guard{search_in_progress_};
+        // Acquire shared lock - allows multiple concurrent searches
+        // Mutations (addPoints, removePoint) acquire exclusive lock and wait for searches to complete
+        std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
+
+        // Get thread-local CUDA stream for concurrent GPU operations
+        cudaStream_t stream = this->getThreadStream();
 
         size_t num_queries = queries.rows;
 
@@ -1171,26 +1188,26 @@ protected:
             }
         }
 
-        // Upload queries to GPU
+        // Upload queries to GPU (using thread-local stream)
         if ((size_t)padded_bytes == this->veclen_) {
             // Fast path: no padding needed, direct upload
-            gpu_queries.upload(queries[0], num_queries * this->veclen_);
+            gpu_queries.upload(queries[0], num_queries * this->veclen_, stream);
         } else {
             // Padding needed: upload raw then pad on GPU
             CUDABuffer<ElementType> raw_queries_gpu(num_queries * this->veclen_);
-            raw_queries_gpu.upload(queries[0], num_queries * this->veclen_);
+            raw_queries_gpu.upload(queries[0], num_queries * this->veclen_, stream);
             if (!launch_pad_queries<ElementType>(
                     raw_queries_gpu.get(),
                     gpu_queries.get(),
                     num_queries,
                     this->veclen_,
                     padded_bytes,
-                    nullptr)) {
+                    stream)) {
                 throw FLANNException("Failed to launch GPU padding kernel");
             }
         }
 
-        // Run cooperative kernel
+        // Run cooperative kernel (on thread-local stream)
         bool success = launch_hierarchical_search_cooperative(
             reinterpret_cast<const unsigned char*>(dataset_ptr_),
             reinterpret_cast<const unsigned char*>(gpu_queries.get()),
@@ -1203,7 +1220,8 @@ protected:
             gpu_num_nodes_,    // Number of tree nodes
             knn,               // Number of nearest neighbors
             gpu_num_trees_,    // Number of trees (roots at indices 0..num_trees-1)
-            this->branching_   // Branching factor (tree N's children start at N*branching)
+            this->branching_,  // Branching factor (tree N's children start at N*branching)
+            stream             // CUDA stream for concurrent execution
         );
 
         if (!success) {
@@ -1214,8 +1232,7 @@ protected:
         CUDA_CHECK_LAST();
 
         // Download results using pinned memory for faster DMA transfers
-        // Use async transfers on default stream to overlap both downloads
-        cudaStream_t stream = nullptr;  // Default stream
+        // Use async transfers on thread-local stream to overlap both downloads
         PinnedBuffer<int> result_indices(num_queries * knn);
         PinnedBuffer<int> result_dists(num_queries * knn);
 
@@ -1223,7 +1240,7 @@ protected:
         gpu_indices.download(result_indices.get(), num_queries * knn, stream);
         gpu_dists.download(result_dists.get(), num_queries * knn, stream);
 
-        // Single sync point - waits for kernel + both downloads
+        // Single sync point - waits for kernel + both downloads on this thread's stream
         CUDA_CHECK(cudaStreamSynchronize(stream));
         CUDA_CHECK_LAST();  // Check for any errors after sync
 
@@ -1248,8 +1265,8 @@ private:
     bool gpu_search_ready_;     ///< True if buildCUDAKnnSearch() was called
     bool gpu_only_mode_;        ///< True if loaded with gpu_only=true (points_ not available)
 
-    // Thread safety detection (enabled in all builds to prevent GPU corruption)
-    mutable std::atomic<bool> search_in_progress_{false};
+    // Note: Thread safety is now handled by rw_lock_ in base class CUDAIndex
+    // (std::shared_mutex for reader-writer locking)
 
     int gpu_num_trees_;         ///< Number of trees (tree roots are nodes 0..num_trees-1)
     int gpu_num_nodes_;         ///< Number of tree nodes (needed for kernel)

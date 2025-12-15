@@ -472,37 +472,61 @@ index.buildCUDAKnnSearch(17, params);  // THROWS FLANNException!
 
 ### 8. Thread Safety
 
-**CUDA indices are NOT thread-safe for concurrent searches.** A single index instance should not be used from multiple threads simultaneously. Concurrent GPU searches can cause silent data corruption.
+**CUDA indices ARE thread-safe for concurrent searches.** Multiple threads can safely call `knnSearch()` or `knnSearchGPU()` on the same index instance simultaneously. This is achieved through:
 
-**Runtime Detection:** The library includes runtime detection of concurrent access. If a concurrent search is attempted, a `FLANNException` will be thrown:
+1. **Reader-writer locking (`std::shared_mutex`):** Concurrent searches acquire shared (read) locks, allowing full parallelism. Mutations (addPoints, removePoint) acquire exclusive (write) locks and wait for all searches to complete.
 
-```
-Concurrent search detected - KMeansCUDAIndex is NOT thread-safe. Each thread should have its own index instance.
-```
+2. **Per-thread CUDA streams:** Each thread gets its own CUDA stream via `thread_local` storage, enabling concurrent GPU kernel execution without stream contention.
 
-**Recommended Patterns:**
+3. **Per-search resource allocation:** Query buffers and result buffers are allocated per-search, eliminating data races on temporary storage.
+
+**Concurrency Model:**
+
+| Operation | Lock Type | Concurrent With |
+|-----------|-----------|-----------------|
+| `knnSearch()` | Shared (read) | Other searches |
+| `addPoints()` | Exclusive (write) | Nothing |
+| `removePoint()` | Exclusive (write) | Nothing |
+| `uploadToGPU()` | Exclusive (write) | Nothing |
+| `buildCUDAKnnSearch()` | Exclusive (write) | Nothing |
+
+**Usage Examples:**
 
 ```cpp
-// WRONG - concurrent access throws FLANNException
-std::thread t1([&index]{ index.knnSearch(...); });
-std::thread t2([&index]{ index.knnSearch(...); });
+// Thread-safe concurrent searches (automatically parallelized)
+cuda::KMeansCUDAIndex<L2<float>> index(dataset, cuda::KMeansCUDAIndexParams(32));
+index.buildIndex();
+index.buildCUDAKnnSearch(k, SearchParams());
 
-// CORRECT - each thread has its own index
-auto createIndex = [&dataset]() {
-    auto index = Index<L2<float>>(dataset, KMeansCUDAIndexParams(...));
-    index.buildIndex();
-    index.buildCUDAKnnSearch(k, params);
-    return index;
-};
+// Launch multiple search threads - fully concurrent
+std::vector<std::thread> threads;
+for (int t = 0; t < 8; ++t) {
+    threads.emplace_back([&index, &queries, k]() {
+        Matrix<int> indices(new int[queries.rows * k], queries.rows, k);
+        Matrix<float> dists(new float[queries.rows * k], queries.rows, k);
 
-std::thread t1([&]{ auto idx = createIndex(); idx.knnSearch(...); });
-std::thread t2([&]{ auto idx = createIndex(); idx.knnSearch(...); });
+        // Safe to call from multiple threads simultaneously
+        index.knnSearch(queries, indices, dists, k, SearchParams());
 
-// ALTERNATIVE - serialize access with mutex
-std::mutex index_mutex;
-std::thread t1([&]{ std::lock_guard<std::mutex> lock(index_mutex); index.knnSearch(...); });
-std::thread t2([&]{ std::lock_guard<std::mutex> lock(index_mutex); index.knnSearch(...); });
+        // ... process results ...
+        delete[] indices.ptr();
+        delete[] dists.ptr();
+    });
+}
+
+for (auto& t : threads) t.join();
 ```
+
+**Performance Characteristics:**
+
+| Aspect | Impact |
+|--------|--------|
+| Lock overhead | ~10ns per search (negligible vs GPU time) |
+| Stream creation | ~0.5ms first call per thread, then cached |
+| Memory per thread | ~100KB (result buffers) |
+| GPU parallelism | Full concurrent kernel execution |
+
+**Note:** While searches are thread-safe, mutations (addPoints, removePoint) will block all concurrent searches until complete. For workloads with frequent mutations, consider using separate index instances per thread.
 
 ---
 

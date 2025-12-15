@@ -526,6 +526,7 @@ __global__ void hierarchical_search_cooperative_kernel(
  * @param k Number of nearest neighbors
  * @param num_trees Number of parallel trees
  * @param branching Branching factor
+ * @param stream CUDA stream for concurrent execution (nullptr = default stream)
  * @return true if kernel launched successfully
  */
 bool launch_hierarchical_search_cooperative(
@@ -540,7 +541,8 @@ bool launch_hierarchical_search_cooperative(
     size_t num_nodes,
     int k,
     int num_trees,
-    int branching
+    int branching,
+    cudaStream_t stream = nullptr
 ) {
     // Cooperative kernel launch configuration
     // LOC_SIZE=128 matches K-Means CUDA kernel for consistency (97.4% precision)
@@ -561,100 +563,100 @@ bool launch_hierarchical_search_cooperative(
     // Dispatch based on k (ordered by performance tier, then numerically)
     // Tier 4: Non-aligned (kept for API compatibility)
     if (k == 1) {
-        hierarchical_search_cooperative_kernel<1><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<1><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 2) {
-        hierarchical_search_cooperative_kernel<2><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<2><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 3) {
-        hierarchical_search_cooperative_kernel<3><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<3><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     // Tier 3: Multiple of 4 (vectorized)
     } else if (k == 4) {
-        hierarchical_search_cooperative_kernel<4><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<4><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 5) {
-        hierarchical_search_cooperative_kernel<5><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<5><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     // Tier 2: Multiple of 8 (good vectorization)
     } else if (k == 8) {
-        hierarchical_search_cooperative_kernel<8><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<8><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 10) {
-        hierarchical_search_cooperative_kernel<10><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<10><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 12) {
-        hierarchical_search_cooperative_kernel<12><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<12><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     // Tier 1: Multiple of 16 (optimal - cache-aligned + vectorized)
     } else if (k == 16) {
-        hierarchical_search_cooperative_kernel<16><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<16><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 20) {
-        hierarchical_search_cooperative_kernel<20><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<20><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 24) {
-        hierarchical_search_cooperative_kernel<24><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<24><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 32) {
-        hierarchical_search_cooperative_kernel<32><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<32><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 50) {
-        hierarchical_search_cooperative_kernel<50><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<50><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 64) {
-        hierarchical_search_cooperative_kernel<64><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<64><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 100) {
-        hierarchical_search_cooperative_kernel<100><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<100><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,
             actual_bytes, padded_bytes);
     } else if (k == 128) {
-        hierarchical_search_cooperative_kernel<128><<<grid, block, shared_mem_bytes>>>(
+        hierarchical_search_cooperative_kernel<128><<<grid, block, shared_mem_bytes, stream>>>(
             device_node_index, dataset, queries,
             result_indices, result_distances,
             num_queries, num_nodes, num_trees, branching,

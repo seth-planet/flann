@@ -36,6 +36,10 @@ if (HDF5_FOUND)
         # CPU vs CUDA comparison tests (precision parity and performance)
         flann_add_cuda_gtest(flann_cuda_cpu_comparison_test flann_cuda_cpu_comparison_test.cpp flann_cuda_s ${TEST_LIBRARIES})
         target_link_libraries(flann_cuda_cpu_comparison_test ${LZ4_LIBRARIES} CUDA::cudart)
+
+        # Thread safety tests for concurrent CUDA searches
+        flann_add_cuda_gtest(flann_cuda_threadsafety_test flann_cuda_threadsafety_test.cpp flann_cuda_s ${TEST_LIBRARIES})
+        target_link_libraries(flann_cuda_threadsafety_test ${LZ4_LIBRARIES} CUDA::cudart)
     endif()
     
     flann_add_gtest(flann_kdtree_single_test flann_kdtree_single_test.cpp flann_cpp ${TEST_LIBRARIES})

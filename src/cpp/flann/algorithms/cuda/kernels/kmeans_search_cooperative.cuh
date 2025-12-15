@@ -682,6 +682,7 @@ __global__ void kmeans_search_cooperative_kernel(
  * @param heap_size Calculated heap size (for validation)
  * @param loc_size Device capability (32, 64, or 128)
  * @param cb_index CB_INDEX parameter
+ * @param stream CUDA stream for concurrent execution (nullptr = default stream)
  * @return true if launched successfully
  */
 template<int K>
@@ -699,7 +700,8 @@ bool launch_kmeans_search_cooperative(
     int heap_size,
     int loc_size,
     int branching,  // Add branching factor parameter
-    float cb_index
+    float cb_index,
+    cudaStream_t stream = nullptr  // CUDA stream for concurrent execution
 ) {
     // heap_size is unused in CUDA implementation. Kept for API parity with OpenCL.
     // CUDA uses template parameter K for compile-time heap sizing (better performance).
@@ -716,12 +718,12 @@ bool launch_kmeans_search_cooperative(
     if (loc_size == 32) {
         if (dim <= 128) {
             if (branching == 32) {
-                kmeans_search_cooperative_kernel<K, 32, 128, 32><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 32, 128, 32><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
             } else if (branching == 64) {
-                kmeans_search_cooperative_kernel<K, 32, 128, 64><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 32, 128, 64><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
@@ -730,12 +732,12 @@ bool launch_kmeans_search_cooperative(
             }
         } else if (dim <= 256) {
             if (branching == 32) {
-                kmeans_search_cooperative_kernel<K, 32, 256, 32><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 32, 256, 32><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
             } else if (branching == 64) {
-                kmeans_search_cooperative_kernel<K, 32, 256, 64><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 32, 256, 64><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
@@ -748,12 +750,12 @@ bool launch_kmeans_search_cooperative(
     } else if (loc_size == 64) {
         if (dim <= 128) {
             if (branching == 32) {
-                kmeans_search_cooperative_kernel<K, 64, 128, 32><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 64, 128, 32><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
             } else if (branching == 64) {
-                kmeans_search_cooperative_kernel<K, 64, 128, 64><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 64, 128, 64><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
@@ -762,12 +764,12 @@ bool launch_kmeans_search_cooperative(
             }
         } else if (dim <= 256) {
             if (branching == 32) {
-                kmeans_search_cooperative_kernel<K, 64, 256, 32><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 64, 256, 32><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
             } else if (branching == 64) {
-                kmeans_search_cooperative_kernel<K, 64, 256, 64><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 64, 256, 64><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
@@ -780,12 +782,12 @@ bool launch_kmeans_search_cooperative(
     } else if (loc_size == 128) {
         if (dim <= 128) {
             if (branching == 32) {
-                kmeans_search_cooperative_kernel<K, 128, 128, 32><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 128, 128, 32><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
             } else if (branching == 64) {
-                kmeans_search_cooperative_kernel<K, 128, 128, 64><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 128, 128, 64><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
@@ -794,12 +796,12 @@ bool launch_kmeans_search_cooperative(
             }
         } else if (dim <= 256) {
             if (branching == 32) {
-                kmeans_search_cooperative_kernel<K, 128, 256, 32><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 128, 256, 32><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
             } else if (branching == 64) {
-                kmeans_search_cooperative_kernel<K, 128, 256, 64><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 128, 256, 64><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
@@ -812,12 +814,12 @@ bool launch_kmeans_search_cooperative(
     } else if (loc_size == 256) {
         if (dim <= 128) {
             if (branching == 32) {
-                kmeans_search_cooperative_kernel<K, 256, 128, 32><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 256, 128, 32><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
             } else if (branching == 64) {
-                kmeans_search_cooperative_kernel<K, 256, 128, 64><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 256, 128, 64><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
@@ -826,12 +828,12 @@ bool launch_kmeans_search_cooperative(
             }
         } else if (dim <= 256) {
             if (branching == 32) {
-                kmeans_search_cooperative_kernel<K, 256, 256, 32><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 256, 256, 32><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
             } else if (branching == 64) {
-                kmeans_search_cooperative_kernel<K, 256, 256, 64><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 256, 256, 64><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
@@ -844,12 +846,12 @@ bool launch_kmeans_search_cooperative(
     } else if (loc_size == 512) {
         if (dim <= 128) {
             if (branching == 32) {
-                kmeans_search_cooperative_kernel<K, 512, 128, 32><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 512, 128, 32><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
             } else if (branching == 64) {
-                kmeans_search_cooperative_kernel<K, 512, 128, 64><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 512, 128, 64><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
@@ -858,12 +860,12 @@ bool launch_kmeans_search_cooperative(
             }
         } else if (dim <= 256) {
             if (branching == 32) {
-                kmeans_search_cooperative_kernel<K, 512, 256, 32><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 512, 256, 32><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
             } else if (branching == 64) {
-                kmeans_search_cooperative_kernel<K, 512, 256, 64><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 512, 256, 64><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
@@ -876,12 +878,12 @@ bool launch_kmeans_search_cooperative(
     } else if (loc_size == 1024) {
         if (dim <= 128) {
             if (branching == 32) {
-                kmeans_search_cooperative_kernel<K, 1024, 128, 32><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 1024, 128, 32><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
             } else if (branching == 64) {
-                kmeans_search_cooperative_kernel<K, 1024, 128, 64><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 1024, 128, 64><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
@@ -890,12 +892,12 @@ bool launch_kmeans_search_cooperative(
             }
         } else if (dim <= 256) {
             if (branching == 32) {
-                kmeans_search_cooperative_kernel<K, 1024, 256, 32><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 1024, 256, 32><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
             } else if (branching == 64) {
-                kmeans_search_cooperative_kernel<K, 1024, 256, 64><<<grid, block>>>(
+                kmeans_search_cooperative_kernel<K, 1024, 256, 64><<<grid, block, 0, stream>>>(
                     dataset, queries, node_index, node_pivots, node_variance,
                     result_indices, result_distances, num_queries, dim, num_nodes, cb_index
                 );
