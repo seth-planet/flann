@@ -46,6 +46,9 @@
 // Include the cooperative kernel implementation (production kernel)
 #include "kernels/kmeans_search_cooperative.cuh"
 
+// Include utility kernels (padding, etc.)
+#include "kernels/utility_kernels.cuh"
+
 // Explicit template instantiations for cooperative kernel launcher
 // Required because the launcher is called from host code via template dispatch
 namespace flann {
@@ -104,6 +107,10 @@ template bool launch_kmeans_search_cooperative<64>(
 template bool launch_kmeans_search_cooperative<100>(
     const float*, const float*, const int*, const float*, const float*,
     int*, float*, size_t, size_t, size_t, int, int, int, float);
+
+// Explicit instantiation for query padding kernel (float for K-Means)
+template bool launch_pad_queries<float>(
+    const float*, float*, size_t, size_t, size_t, cudaStream_t);
 
 } // namespace cuda
 } // namespace flann

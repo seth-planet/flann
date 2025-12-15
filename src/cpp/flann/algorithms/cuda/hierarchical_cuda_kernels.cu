@@ -46,11 +46,18 @@
 // Include the kernel implementations
 #include "kernels/hierarchical_search_kernel.cuh"
 #include "kernels/hierarchical_search_cooperative.cuh"
+#include "kernels/utility_kernels.cuh"
 
 // This .cu file exists purely to trigger CUDA compilation of the kernels.
 // The launch_hierarchical_search() function is inline in the .cuh header and
 // will be instantiated when this file is compiled by nvcc.
 
-// No additional code needed - the kernel templates are instantiated
-// on-demand when launch_hierarchical_search() calls them with specific k and
-// max_checks values.
+// Explicit instantiation for query padding kernel (unsigned char for Hierarchical)
+namespace flann {
+namespace cuda {
+
+template bool launch_pad_queries<unsigned char>(
+    const unsigned char*, unsigned char*, size_t, size_t, size_t, cudaStream_t);
+
+} // namespace cuda
+} // namespace flann

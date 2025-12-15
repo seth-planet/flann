@@ -52,6 +52,7 @@ namespace cuda {
 #ifdef __CUDACC__
 #include "flann/algorithms/cuda/kernels/hierarchical_search_kernel.cuh"
 #include "flann/algorithms/cuda/kernels/hierarchical_search_cooperative.cuh"
+#include "flann/algorithms/cuda/kernels/utility_kernels.cuh"
 #else
 // Forward declare kernel launch functions for non-CUDA compilation
 bool launch_hierarchical_search_cooperative(
@@ -67,6 +68,16 @@ bool launch_hierarchical_search_cooperative(
     int k,
     int num_trees,
     int branching);
+
+// Forward declare padding kernel launcher (default args in kmeans_cuda_index.h)
+template<typename T>
+bool launch_pad_queries(
+    const T* src,
+    T* dst,
+    size_t num_queries,
+    size_t veclen,
+    size_t padded_veclen,
+    cudaStream_t stream);
 #endif
 
 /**
@@ -1124,15 +1135,55 @@ protected:
         CUDABuffer<int> gpu_indices(num_queries * knn);
         CUDABuffer<int> gpu_dists(num_queries * knn);
 
-        // Prepare padded queries on host and upload to GPU
-        std::vector<ElementType> padded_queries(num_queries * padded_bytes, 0);
-        for (size_t i = 0; i < num_queries; ++i) {
-            std::memcpy(&padded_queries[i * padded_bytes],
-                       queries[i],
-                       this->veclen_ * sizeof(ElementType));
-            // Padding bytes already zero-initialized
+        // Upload queries to GPU with GPU-side padding (faster than CPU padding)
+        // Check if queries are contiguous in memory (common case)
+        bool is_contiguous = true;
+        for (size_t i = 1; i < num_queries && is_contiguous; ++i) {
+            is_contiguous = (queries[i] == queries[i-1] + this->veclen_);
         }
-        gpu_queries.upload(padded_queries.data(), num_queries * padded_bytes);
+
+        if (is_contiguous && (size_t)padded_bytes == this->veclen_) {
+            // Fast path: no padding needed, direct upload
+            gpu_queries.upload(queries[0], num_queries * this->veclen_);
+        } else if (is_contiguous) {
+            // Medium path: contiguous queries, GPU-side padding
+            CUDABuffer<ElementType> raw_queries_gpu(num_queries * this->veclen_);
+            raw_queries_gpu.upload(queries[0], num_queries * this->veclen_);
+
+            // Pad queries on GPU
+            if (!launch_pad_queries<ElementType>(
+                    raw_queries_gpu.get(),
+                    gpu_queries.get(),
+                    num_queries,
+                    this->veclen_,
+                    padded_bytes,
+                    nullptr)) {
+                throw FLANNException("Failed to launch GPU padding kernel");
+            }
+            // raw_queries_gpu freed when scope exits
+        } else {
+            // Slow path: non-contiguous queries, CPU gather + GPU padding
+            std::vector<ElementType> gathered_queries(num_queries * this->veclen_);
+            for (size_t i = 0; i < num_queries; ++i) {
+                std::memcpy(&gathered_queries[i * this->veclen_],
+                           queries[i],
+                           this->veclen_ * sizeof(ElementType));
+            }
+
+            CUDABuffer<ElementType> raw_queries_gpu(num_queries * this->veclen_);
+            raw_queries_gpu.upload(gathered_queries.data(), num_queries * this->veclen_);
+
+            // Pad queries on GPU
+            if (!launch_pad_queries<ElementType>(
+                    raw_queries_gpu.get(),
+                    gpu_queries.get(),
+                    num_queries,
+                    this->veclen_,
+                    padded_bytes,
+                    nullptr)) {
+                throw FLANNException("Failed to launch GPU padding kernel");
+            }
+        }
 
         // Run cooperative kernel
         bool success = launch_hierarchical_search_cooperative(
@@ -1154,15 +1205,22 @@ protected:
             throw FLANNException("Unsupported k value for GPU search");
         }
 
-        // Check for kernel errors and wait for completion
+        // Check for kernel launch errors (non-blocking)
         CUDA_CHECK_LAST();
-        CUDA_CHECK(cudaDeviceSynchronize());
 
-        // Download results from GPU
-        std::vector<int> result_indices(num_queries * knn);
-        std::vector<int> result_dists(num_queries * knn);
-        gpu_indices.download(result_indices.data(), num_queries * knn);
-        gpu_dists.download(result_dists.data(), num_queries * knn);
+        // Download results using pinned memory for faster DMA transfers
+        // Use async transfers on default stream to overlap both downloads
+        cudaStream_t stream = nullptr;  // Default stream
+        PinnedBuffer<int> result_indices(num_queries * knn);
+        PinnedBuffer<int> result_dists(num_queries * knn);
+
+        // Async downloads (will wait for kernel on same stream)
+        gpu_indices.download(result_indices.get(), num_queries * knn, stream);
+        gpu_dists.download(result_dists.get(), num_queries * knn, stream);
+
+        // Single sync point - waits for kernel + both downloads
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        CUDA_CHECK_LAST();  // Check for any errors after sync
 
         // Copy to output matrices (convert int -> size_t for indices, int -> DistanceType for dists)
         for (size_t i = 0; i < num_queries; ++i) {
