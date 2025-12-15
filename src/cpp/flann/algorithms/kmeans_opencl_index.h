@@ -109,6 +109,19 @@ public:
         cl_dataset_ = NULL;
     }
 
+    /**
+     * Copy constructor - properly resets OpenCL resources
+     * GPU buffers are NOT copied; call buildCLKnnSearch() after copy
+     */
+    KMeansOpenCLIndex(const KMeansOpenCLIndex<Distance>& other) : BaseClass(other), OpenCLIndex()
+    {
+        cl_node_index_arr_ = NULL;
+        cl_node_pivots_ = NULL;
+        cl_node_radii_ = NULL;
+        cl_node_variance_ = NULL;
+        cl_dataset_ = NULL;
+    }
+
     KMeansOpenCLIndex& operator=(KMeansOpenCLIndex other)
     {
         this->swap(other);
