@@ -10,10 +10,13 @@
  *
  * Options:
  *   --index-type=<type>  Force index type: kmeans, hierarchical (auto-detected if not specified)
- *   --k=<value>          K value for GPU search setup (default: 10)
- *   --checks=<value>     Search checks parameter (default: 128 for kmeans, 2000 for hierarchical)
- *   --verify             Verify conversion by comparing search results
+ *   --warmup-k=<value>   Pre-warm JIT for this K value (default: none, lazy warmup on first search)
+ *   --verify             Verify conversion by comparing search results (uses warmup-k or default k=10)
  *   --verbose            Print detailed information
+ *
+ * Deprecated Options:
+ *   --k=<value>          Deprecated: treated as --warmup-k (K is now a search-time parameter)
+ *   --checks=<value>     Deprecated: ignored (checks only affect search quality, not conversion)
  *
  * Requirements:
  *   - Input file must have save_dataset=true (dataset embedded in file)
@@ -43,10 +46,12 @@ void printUsage(const char* prog) {
               << "Usage: " << prog << " <input_file> <output_file> [options]\n"
               << "\nOptions:\n"
               << "  --index-type=<type>  Force index type: kmeans, hierarchical\n"
-              << "  --k=<value>          K value for GPU search setup (default: 10)\n"
-              << "  --checks=<value>     Search checks parameter (default: auto)\n"
+              << "  --warmup-k=<value>   Pre-warm JIT for K value (optional, default: lazy warmup)\n"
               << "  --verify             Verify conversion by comparing search results\n"
               << "  --verbose            Print detailed information\n"
+              << "\nDeprecated options (still work but emit warnings):\n"
+              << "  --k=<value>          Treated as --warmup-k\n"
+              << "  --checks=<value>     Ignored (K is now search-time parameter)\n"
               << "\nExample:\n"
               << "  " << prog << " index.db index.gpu.db --verify --verbose\n";
 }
@@ -80,7 +85,7 @@ size_t getFileSize(const char* filename) {
 
 template<typename Distance>
 bool convertIndex(const char* input, const char* output,
-                  int k, int checks, bool verify, bool verbose,
+                  int warmup_k, bool verify, bool verbose,
                   size_t expected_rows, size_t expected_cols) {
     using ElementType = typename Distance::ElementType;
     using DistanceType = typename Distance::ResultType;
@@ -108,30 +113,43 @@ bool convertIndex(const char* input, const char* output,
                   << ") differ from header (" << expected_rows << "x" << expected_cols << ")\n";
     }
 
+    // K value for verification (use warmup_k if provided, otherwise default to 10)
+    int verify_k = (warmup_k > 0) ? warmup_k : 10;
+
     // Run search before conversion (for verification)
     flann::Matrix<size_t> indices_before;
     flann::Matrix<DistanceType> dists_before;
     size_t num_queries = std::min(size_t(10), index.size());
 
     if (verify && num_queries > 0) {
-        indices_before = flann::Matrix<size_t>(new size_t[num_queries * k], num_queries, k);
-        dists_before = flann::Matrix<DistanceType>(new DistanceType[num_queries * k], num_queries, k);
+        indices_before = flann::Matrix<size_t>(new size_t[num_queries * verify_k], num_queries, verify_k);
+        dists_before = flann::Matrix<DistanceType>(new DistanceType[num_queries * verify_k], num_queries, verify_k);
 
         // Use first points as queries
         flann::Matrix<ElementType> queries(const_cast<ElementType*>(index.getPoint(0)),
                                            num_queries, index.veclen());
-        index.knnSearch(queries, indices_before, dists_before, k, flann::SearchParams(checks));
+        index.knnSearch(queries, indices_before, dists_before, verify_k, flann::SearchParams(256));
 
         if (verbose) std::cout << "  Ran verification search (CPU): " << num_queries << " queries\n";
     }
 
-    // Build GPU search structures
-    if (verbose) std::cout << "Building GPU search structures...\n";
+    // Prepare GPU index (K-independent upload)
+    if (verbose) std::cout << "Preparing GPU index (K-independent)...\n";
     auto gpu_start = std::chrono::high_resolution_clock::now();
-    index.buildCUDAKnnSearch(k, flann::SearchParams(checks));
+    index.prepareGPUIndex();
     auto gpu_end = std::chrono::high_resolution_clock::now();
     double gpu_ms = std::chrono::duration<double, std::milli>(gpu_end - gpu_start).count();
-    if (verbose) std::cout << "  GPU build time: " << gpu_ms << " ms\n";
+    if (verbose) std::cout << "  GPU prepare time: " << gpu_ms << " ms\n";
+
+    // Optional: pre-warm JIT for specific K value
+    if (warmup_k > 0) {
+        if (verbose) std::cout << "  Pre-warming JIT for k=" << warmup_k << "...\n";
+        auto warmup_start = std::chrono::high_resolution_clock::now();
+        index.warmupForK(warmup_k);
+        auto warmup_end = std::chrono::high_resolution_clock::now();
+        double warmup_ms = std::chrono::duration<double, std::milli>(warmup_end - warmup_start).count();
+        if (verbose) std::cout << "  Warmup time: " << warmup_ms << " ms\n";
+    }
 
     // Convert to GPU-only format (discards CPU tree)
     if (verbose) std::cout << "Converting to GPU-only format...\n";
@@ -160,29 +178,32 @@ bool convertIndex(const char* input, const char* output,
         // Load GPU format
         flann::Matrix<ElementType> dataset2;
         flann::Index<Distance> loaded(dataset2, flann::SavedIndexParams(output));
-        loaded.buildCUDAKnnSearch(k, flann::SearchParams(checks));
+
+        // Use new K-independent prepare + explicit warmup for verification K
+        loaded.prepareGPUIndex();
+        loaded.warmupForK(verify_k);
 
         // Run search after conversion
         // Use the original queries from before conversion (GPU-only mode doesn't support getPoint)
-        flann::Matrix<size_t> indices_after(new size_t[num_queries * k], num_queries, k);
-        flann::Matrix<DistanceType> dists_after(new DistanceType[num_queries * k], num_queries, k);
+        flann::Matrix<size_t> indices_after(new size_t[num_queries * verify_k], num_queries, verify_k);
+        flann::Matrix<DistanceType> dists_after(new DistanceType[num_queries * verify_k], num_queries, verify_k);
 
         // Reuse original queries from before conversion
         flann::Matrix<ElementType> queries(const_cast<ElementType*>(index.getPoint(0)),
                                            num_queries, index.veclen());
-        loaded.knnSearch(queries, indices_after, dists_after, k, flann::SearchParams(checks));
+        loaded.knnSearch(queries, indices_after, dists_after, verify_k, flann::SearchParams(256));
 
         // Compare results using precision (not exact match, since GPU may find better neighbors)
         // Count how many GPU results are in top-k CPU results (precision)
         int correct = 0;
-        int total = num_queries * k;
+        int total = num_queries * verify_k;
         int better_count = 0;
         int worse_count = 0;
 
         for (size_t i = 0; i < num_queries; ++i) {
-            for (size_t j = 0; j < (size_t)k; ++j) {
+            for (size_t j = 0; j < (size_t)verify_k; ++j) {
                 bool found = false;
-                for (size_t m = 0; m < (size_t)k; ++m) {
+                for (size_t m = 0; m < (size_t)verify_k; ++m) {
                     if (indices_after[i][j] == indices_before[i][m]) {
                         found = true;
                         break;
@@ -241,18 +262,24 @@ int main(int argc, char** argv) {
 
     // Parse options
     std::string index_type_str;
-    int k = 10;
-    int checks = -1;  // Auto-select based on index type
+    int warmup_k = 0;  // 0 = no warmup (lazy warmup on first search)
     bool verify = false;
     bool verbose = false;
 
     for (int i = 3; i < argc; ++i) {
         if (strncmp(argv[i], "--index-type=", 13) == 0) {
             index_type_str = argv[i] + 13;
+        } else if (strncmp(argv[i], "--warmup-k=", 11) == 0) {
+            warmup_k = atoi(argv[i] + 11);
         } else if (strncmp(argv[i], "--k=", 4) == 0) {
-            k = atoi(argv[i] + 4);
+            // Deprecated: treat as --warmup-k
+            warmup_k = atoi(argv[i] + 4);
+            std::cerr << "Warning: --k is deprecated; treated as --warmup-k=" << warmup_k << "\n";
+            std::cerr << "         K is now a search-time parameter, not a conversion-time requirement.\n";
         } else if (strncmp(argv[i], "--checks=", 9) == 0) {
-            checks = atoi(argv[i] + 9);
+            // Deprecated: ignore
+            std::cerr << "Warning: --checks is deprecated and ignored.\n";
+            std::cerr << "         Checks only affect search quality, not index conversion.\n";
         } else if (strcmp(argv[i], "--verify") == 0) {
             verify = true;
         } else if (strcmp(argv[i], "--verbose") == 0) {
@@ -297,12 +324,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        // Auto-select checks if not specified
-        if (checks < 0) {
-            checks = (index_type == FLANN_INDEX_HIERARCHICAL ||
-                      index_type == FLANN_INDEX_HIERARCHICAL_CUDA) ? 2000 : 128;
-        }
-
         std::cout << "FLANN Index GPU Conversion\n"
                   << "  Input:  " << input << "\n"
                   << "  Output: " << output << "\n"
@@ -314,21 +335,26 @@ int main(int argc, char** argv) {
             case FLANN_INDEX_HIERARCHICAL_CUDA: std::cout << "Hierarchical CUDA (Hamming)\n"; break;
             default: std::cout << "Unknown (" << index_type << ")\n"; break;
         }
-        std::cout << "  Dataset: " << header.rows << " points x " << header.cols << " dims\n"
-                  << "  Parameters: k=" << k << ", checks=" << checks << "\n\n";
+        std::cout << "  Dataset: " << header.rows << " points x " << header.cols << " dims\n";
+        if (warmup_k > 0) {
+            std::cout << "  Warmup K: " << warmup_k << "\n";
+        } else {
+            std::cout << "  Warmup K: none (lazy warmup on first search)\n";
+        }
+        std::cout << "\n";
 
         bool success = false;
         switch (index_type) {
             case FLANN_INDEX_KMEANS:
             case FLANN_INDEX_KMEANS_CUDA: {
                 success = convertIndex<flann::L2<float>>(
-                    input, output, k, checks, verify, verbose, header.rows, header.cols);
+                    input, output, warmup_k, verify, verbose, header.rows, header.cols);
                 break;
             }
             case FLANN_INDEX_HIERARCHICAL:
             case FLANN_INDEX_HIERARCHICAL_CUDA: {
                 success = convertIndex<flann::Hamming<unsigned char>>(
-                    input, output, k, checks, verify, verbose, header.rows, header.cols);
+                    input, output, warmup_k, verify, verbose, header.rows, header.cols);
                 break;
             }
             default:

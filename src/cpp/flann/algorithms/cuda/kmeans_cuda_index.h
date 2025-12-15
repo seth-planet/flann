@@ -39,6 +39,7 @@
 #include <cuda_runtime.h>
 #include <mutex>         // For std::unique_lock
 #include <shared_mutex>  // For std::shared_mutex, std::shared_lock
+#include <bitset>        // For warmup K tracking
 
 #include "flann/algorithms/kmeans_index.h"
 #include "flann/algorithms/cuda/cuda_utils.h"
@@ -410,43 +411,20 @@ public:
      */
     void buildCUDAKnnSearch(int knn, const SearchParams& params = SearchParams())
     {
-        // Acquire exclusive lock - blocks all concurrent searches during GPU setup
-        std::unique_lock<std::shared_mutex> lock(this->rw_lock_);
-
-        // Validate index is built OR already loaded from GPU format
-        if (!this->root_ && !gpu_initialized_) {
-            throw FLANNException("Cannot prepare GPU search: index not built yet. "
-                               "Call buildIndex() first.");
-        }
-
-        // Validate k value is supported by cooperative kernel
-        // K-Means CUDA supports: 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100
-        if (knn != 1 && knn != 2 && knn != 4 && knn != 5 && knn != 7 && knn != 8 &&
-            knn != 10 && knn != 16 && knn != 20 && knn != 32 && knn != 50 && knn != 64 && knn != 100) {
+        // Validate K is supported before any work
+        if (!isKValueSupportedForGPU(knn)) {
             throw FLANNException(
                 "Unsupported k=" + std::to_string(knn) + " for CUDA K-Means search.\n"
                 "Supported k values: 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100\n"
                 "Use a supported k value or fall back to CPU search.");
         }
 
-        // Upload tree to GPU if not already done (skip if loaded from GPU format)
-        // Note: uploadToGPU is called while holding exclusive lock
-        if (!gpu_initialized_) {
-            uploadToGPUInternal();  // Internal version without lock
-        }
+        // Prepare GPU (upload tree/dataset) - this is now K-independent
+        prepareGPUIndex();
 
-        // Mark GPU as ready for searches
-        gpu_search_ready_ = true;
-
-        // ========================================================================
-        // WARMUP: Trigger JIT compilation during setup (OpenCL parity)
-        // ========================================================================
-        // CUDA kernels are JIT-compiled on first launch, causing ~40ms overhead.
-        // By running a single warmup query during setup, we amortize this cost
-        // and make the first real search as fast as subsequent ones.
-        // Note: Release lock before warmup to allow the warmup search to acquire shared lock
-        lock.unlock();
-        warmupKernel(knn, params);
+        // Warmup for the specific K value (triggers JIT compilation)
+        int checks = params.checks > 0 ? params.checks : 256;
+        ensureWarmupForK(knn, checks);
     }
 
     /**
@@ -468,6 +446,65 @@ public:
     bool hasGPUFormat() const
     {
         return gpu_initialized_;
+    }
+
+    /**
+     * @brief Check if a K value is supported for GPU search
+     *
+     * K-Means CUDA supports: 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100
+     *
+     * @param k Number of nearest neighbors
+     * @return true if k is supported for GPU search
+     */
+    bool isKValueSupportedForGPU(int k) const
+    {
+        return k == 1 || k == 2 || k == 4 || k == 5 || k == 7 || k == 8 ||
+               k == 10 || k == 16 || k == 20 || k == 32 || k == 50 || k == 64 || k == 100;
+    }
+
+    /**
+     * @brief Prepare GPU index for search (K-independent)
+     *
+     * Uploads tree and dataset to GPU without requiring a K value.
+     * Warmup is deferred to first search or explicit warmupForK() call.
+     *
+     * This is the preferred way to prepare GPU indices when K is not known
+     * at conversion time, or when multiple K values will be used.
+     *
+     * @throws FLANNException if index not built
+     */
+    void prepareGPUIndex()
+    {
+        std::unique_lock<std::shared_mutex> lock(this->rw_lock_);
+        if (!this->root_ && !gpu_initialized_) {
+            throw FLANNException("Cannot prepare GPU search: index not built yet. "
+                               "Call buildIndex() first.");
+        }
+        if (!gpu_initialized_) {
+            uploadToGPUInternal();
+        }
+        gpu_search_ready_ = true;
+    }
+
+    /**
+     * @brief Warm up kernel for a specific K value
+     *
+     * Pre-warms the JIT compiler for a specific K value, avoiding ~40ms
+     * overhead on first search with that K.
+     *
+     * @param k Number of nearest neighbors
+     * @param checks Search checks parameter (affects warmup behavior)
+     * @throws FLANNException if prepareGPUIndex() not called or K unsupported
+     */
+    void warmupForK(int k, int checks = 256)
+    {
+        if (!gpu_search_ready_) {
+            throw FLANNException("Call prepareGPUIndex() first.");
+        }
+        if (!isKValueSupportedForGPU(k)) {
+            throw FLANNException("Unsupported k=" + std::to_string(k) + " for GPU search.");
+        }
+        ensureWarmupForK(k, checks);
     }
 
     /**
@@ -545,7 +582,7 @@ public:
      * Runs a single-query search to force kernel compilation.
      * The result is discarded - this is purely to amortize JIT overhead.
      */
-    void warmupKernel(int knn, const SearchParams& params)
+    void warmupKernel(int knn, const SearchParams& params) const
     {
         // Create a dummy single-query search to trigger JIT compilation
         if (this->size_ == 0 || this->veclen_ == 0) return;
@@ -974,6 +1011,14 @@ protected:
             throw FLANNException("Index not built or GPU data not uploaded");
         }
 
+        // Validate K value is supported for GPU search
+        if (!isKValueSupportedForGPU(knn)) {
+            throw FLANNException(
+                "Unsupported k=" + std::to_string(knn) + " for CUDA K-Means search.\n"
+                "Supported k values: 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100\n"
+                "Use a supported k value or fall back to CPU search.");
+        }
+
         // Acquire shared lock - allows multiple concurrent searches
         // Mutations (addPoints, removePoint) acquire exclusive lock and wait for searches to complete
         std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
@@ -999,6 +1044,10 @@ protected:
         if (max_checks <= 0 || max_checks == FLANN_CHECKS_UNLIMITED) {
             max_checks = 256;  // Default
         }
+
+        // Lazy warmup: ensure kernel is JIT-compiled for this K value
+        // First search with a new K value pays ~40ms overhead
+        ensureWarmupForK(knn, max_checks);
 
         // Require contiguous queries (O(1) stride check instead of O(n) pointer loop)
         if (queries.stride != this->veclen_ * sizeof(ElementType)) {
@@ -1579,11 +1628,38 @@ protected:
         return std::max(avgNodes, clKnn);
     }
 
+    /**
+     * @brief Ensure warmup is done for a specific K value (lazy JIT)
+     *
+     * Thread-safe double-checked locking pattern.
+     * Fast path: if already warmed up, returns immediately without lock.
+     * Slow path: acquires warmup_mutex_ and warms up if still needed.
+     *
+     * @param k Number of nearest neighbors
+     * @param checks Search checks parameter for warmup
+     */
+    void ensureWarmupForK(int k, int checks = 256) const
+    {
+        // Fast path: no lock if already warmed up
+        if (warmed_up_k_values_[k]) return;
+
+        // Slow path: acquire lock and double-check
+        std::lock_guard<std::mutex> lock(warmup_mutex_);
+        if (!warmed_up_k_values_[k]) {
+            warmupKernel(k, SearchParams(checks));
+            warmed_up_k_values_.set(k);
+        }
+    }
+
 private:
     // GPU state (mutable = implementation detail, not logical state)
     mutable bool gpu_initialized_;
     mutable bool gpu_search_ready_;
     bool gpu_only_mode_;  // True if loaded with gpu_only=true (points_ not available)
+
+    // Warmup tracking - lazy JIT compilation per K value
+    mutable std::mutex warmup_mutex_;
+    mutable std::bitset<129> warmed_up_k_values_;  // Max K=128 (index 0-128)
 
     // Note: Thread safety is now handled by rw_lock_ in base class CUDAIndex
     // (std::shared_mutex for reader-writer locking)
