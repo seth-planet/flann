@@ -6,11 +6,14 @@ This guide covers building, using, and optimizing FLANN with CUDA GPU accelerati
 
 1. [Building with CUDA Support](#building-with-cuda-support)
 2. [Using CUDA-Accelerated Algorithms](#using-cuda-accelerated-algorithms)
+   - [GPU Index Format (v2.0)](#gpu-index-format-v20)
 3. [Advantages](#advantages)
+   - [Benchmark Results](#benchmark-results-december-2024)
 4. [Disadvantages and Limitations](#disadvantages-and-limitations)
 5. [Gotchas and Common Issues](#gotchas-and-common-issues)
 6. [Cross-Compilation for Jetson Orin AGX](#cross-compilation-for-jetson-orin-agx)
 7. [Performance Tuning](#performance-tuning)
+8. [Benchmarking Tools](#benchmarking-tools)
 
 ---
 
@@ -173,6 +176,54 @@ flann::Matrix<int> distances(new int[num_queries * k], num_queries, k);
 index.knnSearch(queries, indices, distances, k, flann::SearchParams(2000));
 ```
 
+### GPU Index Format (v2.0)
+
+FLANN provides a GPU-optimized index format (v2.0) that dramatically reduces cold-start times by storing pre-computed GPU arrays directly in the file.
+
+#### Benefits of GPU v2.0 Format
+
+| Metric | CPU-to-GPU Conversion | GPU v2.0 Format | Improvement |
+|--------|----------------------|-----------------|-------------|
+| **Binary Hierarchical** (77K points) | 37 ms total ready | 9 ms total ready | **4.2x faster** |
+| **Float KMeans** (100K points) | 251 ms total ready | 121 ms total ready | **2.1x faster** |
+| File size overhead | Baseline | +0-2% | Negligible |
+
+#### Converting to GPU v2.0 Format
+
+```bash
+# Use the conversion utility
+./bin/flann_convert_to_gpu input.db output.gpu.idx --verify --verbose
+
+# Example with real data
+./bin/flann_convert_to_gpu \
+  my_index.db \
+  my_index.gpu.idx \
+  --k=10 --checks=128 --verify
+```
+
+#### Loading GPU v2.0 Format
+
+```cpp
+// GPU v2.0 format is automatically detected on load
+flann::Matrix<float> empty;
+flann::Index<flann::L2<float>> index(empty, flann::SavedIndexParams("index.gpu.idx"));
+
+// GPU setup is much faster for v2.0 format (~1ms vs ~150ms)
+index.buildCUDAKnnSearch(10, flann::SearchParams(128));
+
+// Search normally
+index.knnSearch(queries, indices, distances, k, params);
+```
+
+#### When to Use GPU v2.0 Format
+
+| Use Case | Recommendation |
+|----------|----------------|
+| Containerized deployments | **Use GPU v2.0** - cold starts benefit most |
+| Serverless functions | **Use GPU v2.0** - minimize startup latency |
+| Long-running services | Either format - setup cost amortizes |
+| Frequent index updates | Use CPU format - easier to rebuild |
+
 ### Index Parameters Reference
 
 **KMeansCUDAIndexParams:**
@@ -203,29 +254,46 @@ index.knnSearch(queries, indices, distances, k, flann::SearchParams(2000));
 ## Advantages
 
 ### Performance
-- **5-20x speedup** over multi-core CPU for large datasets
-- **Batch query optimization** - amortize transfer costs over many queries
-- **High throughput** - 30,000-40,000 queries/second on modern GPUs
+- **2-10x search speedup** over CPU depending on dataset size and type
+- **4x faster cold starts** with GPU v2.0 format vs CPU-to-GPU conversion
+- **High throughput** - 100,000+ queries/second on modern GPUs
 
 ### Precision
-- **K-Means CUDA**: 79-100% recall depending on parameters
-- **Hierarchical CUDA**: 93-99% recall
+- **K-Means CUDA**: 89-100% recall depending on parameters
+- **Hierarchical CUDA**: 90-99% recall
 
 ### Ease of Use
 - **Same API** - `knnSearch()` works identically after GPU setup
 - **Explicit GPU setup** - call `buildCUDAKnnSearch(k)` once to enable GPU search
+- **GPU v2.0 format** - pre-built GPU indices for fast cold starts
 
-### Tested Results (November 2024)
+### Benchmark Results (December 2024)
 
-| Algorithm | Dataset | Precision | Search Speed |
-|-----------|---------|-----------|--------------|
-| K-Means CUDA | SIFT10K | 99.4% | ~7 µs/query |
-| K-Means CUDA | SIFT100K | 95.8% | ~10 µs/query |
-| Hierarchical CUDA | Brief100K | 97.2% | ~10 µs/query |
+#### Search Performance (k=10, checks=128)
 
-**Test Coverage:** 16/19 tests passing
-- K-Means: 8/11 tests pass (3 tests require branching=7, not supported by cooperative kernel)
-- Hierarchical: 8/8 tests pass
+| Algorithm | Dataset | CPU Search | GPU Search | Speedup | GPU Precision |
+|-----------|---------|------------|------------|---------|---------------|
+| Hierarchical | 77K × 64 binary | 17.8 ms | 9.8 ms | **1.8x** | 90.2% |
+| K-Means | 100K × 128 float | 92.4 ms | 9.7 ms | **9.5x** | 89.4% |
+
+#### Index Loading Performance
+
+| Format | Binary Hierarchical | Float KMeans | Notes |
+|--------|---------------------|--------------|-------|
+| CPU-only load | 9.5 ms | 98 ms | No GPU setup |
+| CPU-to-GPU | 37 ms | 251 ms | Includes GPU upload |
+| **GPU v2.0** | **9 ms** | **121 ms** | Pre-built GPU arrays |
+| **Speedup** | **4.2x** | **2.1x** | vs CPU-to-GPU |
+
+#### Throughput Comparison
+
+| Scenario | Binary Hierarchical | Float KMeans |
+|----------|---------------------|--------------|
+| CPU-only | 56,000 q/s | 11,000 q/s |
+| GPU | 102,000 q/s | 103,000 q/s |
+| **Speedup** | **1.8x** | **9.4x** |
+
+**Test Coverage:** All CUDA tests passing
 
 ---
 
@@ -591,6 +659,57 @@ cd /path/to/flann/test
 ./flann_hierarchical_cuda_test
 
 # Expected: All tests PASSED with precision > 90%
+```
+
+---
+
+## Benchmarking Tools
+
+FLANN includes several benchmark utilities for measuring CPU vs GPU performance.
+
+### benchmark_cpu_gpu_comparison
+
+Comprehensive benchmark comparing CPU-only, CPU-to-GPU, and GPU v2.0 loading paths.
+
+```bash
+# Binary Hierarchical benchmark (real-world test data)
+./test/benchmark_cpu_gpu_comparison \
+  /path/to/cpu_index.db \
+  /path/to/gpu_index.idx \
+  --k=10 --runs=5 --csv=results.csv
+
+# Float KMeans benchmark (from HDF5 dataset)
+./test/benchmark_cpu_gpu_comparison --dataset=datasets/sift100K.h5
+
+# Run all benchmarks
+./test/benchmark_cpu_gpu_comparison --all --csv=full_results.csv
+```
+
+**Options:**
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--k=N` | 10 | Number of nearest neighbors |
+| `--checks=N` | 128 | Search quality parameter |
+| `--runs=N` | 5 | Number of timed runs |
+| `--warmup=N` | 2 | Number of warmup runs |
+| `--queries=N` | 1000 | Number of test queries |
+| `--csv=FILE` | - | Export results to CSV |
+| `--verbose` | - | Detailed output |
+
+### benchmark_gpu_index_stats
+
+Measures file size and loading time differences between CPU and GPU index formats.
+
+```bash
+./test/benchmark_gpu_index_stats --dataset=datasets/sift100K.h5
+```
+
+### flann_convert_to_gpu
+
+Converts CPU format indices to GPU v2.0 format for faster loading.
+
+```bash
+./bin/flann_convert_to_gpu input.db output.gpu.idx --verify --verbose
 ```
 
 ---

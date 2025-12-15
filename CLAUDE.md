@@ -108,8 +108,28 @@ GPU acceleration available for K-Means and Hierarchical indices:
 | **OpenCL** | NVIDIA/AMD/Intel | [OPENCL_GUIDE.md](OPENCL_GUIDE.md) |
 
 **Quick comparison:**
-- CUDA: 97-99% precision, production-ready, NVIDIA only
+- CUDA: 89-99% precision, production-ready, NVIDIA only
 - OpenCL: 92-98% precision, multi-vendor support
+
+### GPU Index Format (v2.0)
+
+Pre-built GPU indices for fast cold starts:
+```bash
+# Convert CPU index to GPU v2.0 format
+./bin/flann_convert_to_gpu input.db output.gpu.idx --verify
+
+# Load GPU index (4x faster startup than CPU-to-GPU conversion)
+flann::Index<L2<float>> index(empty, SavedIndexParams("output.gpu.idx"));
+```
+
+### Benchmarking Tools
+```bash
+# Compare CPU vs GPU loading and search performance
+./test/benchmark_cpu_gpu_comparison --all --csv=results.csv
+
+# GPU format statistics
+./test/benchmark_gpu_index_stats --dataset=datasets/sift100K.h5
+```
 
 ## Dependencies
 

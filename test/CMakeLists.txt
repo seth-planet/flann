@@ -97,6 +97,20 @@ if (HDF5_FOUND)
         target_compile_options(benchmark_gpu_index_stats PRIVATE -O3 -march=native)
         install(TARGETS benchmark_gpu_index_stats DESTINATION bin)
         message(STATUS "Building benchmark_gpu_index_stats")
+
+        # CPU vs GPU comprehensive comparison benchmark
+        add_executable(benchmark_cpu_gpu_comparison ../scripts/benchmark_cpu_gpu_comparison.cpp)
+        target_include_directories(benchmark_cpu_gpu_comparison PRIVATE ${HDF5_INCLUDE_DIR})
+        target_compile_definitions(benchmark_cpu_gpu_comparison PRIVATE FLANN_USE_CUDA)
+        target_include_directories(benchmark_cpu_gpu_comparison PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+        target_link_libraries(benchmark_cpu_gpu_comparison
+            ${LZ4_LINK_LIBRARIES}
+            flann_cuda
+            ${TEST_LIBRARIES}
+            CUDA::cudart)
+        target_compile_options(benchmark_cpu_gpu_comparison PRIVATE -O3 -march=native)
+        install(TARGETS benchmark_cpu_gpu_comparison DESTINATION bin)
+        message(STATUS "Building benchmark_cpu_gpu_comparison")
     endif()
 endif()
 
