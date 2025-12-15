@@ -37,7 +37,8 @@
 #include <cstdint>  // For SIZE_MAX
 #include <memory>   // For std::unique_ptr
 #include <cuda_runtime.h>
-#include <shared_mutex>  // For std::shared_lock, std::unique_lock
+#include <mutex>         // For std::unique_lock
+#include <shared_mutex>  // For std::shared_mutex, std::shared_lock
 
 #include "flann/algorithms/hierarchical_clustering_index.h"
 #include "flann/algorithms/cuda/cuda_utils.h"

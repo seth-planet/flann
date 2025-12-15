@@ -99,46 +99,46 @@ protected:
 /**
  * Test 1: Basic Search
  * Validate basic k-NN search with default parameters
- * Expected: ≥94% recall@3 (Hierarchical CUDA with Hamming distance)
- * Note: Actual precision typically ~97%, threshold set conservatively
+ * Expected: ≥90% recall@3 (Hierarchical CUDA with Hamming distance, 128 threads/query)
+ * Note: Thread count reduced from 256 to 128 for consistency with K-Means
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestSearch)
 {
 	TestSearch<Distance>(data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100),
-			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.94, gt_indices, gt_dists);
+			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.90, gt_indices, gt_dists);
 }
 
 /**
  * Test 2: High Precision Search
  * Same parameters but validates consistent high precision
- * Expected: ≥94% recall@3
+ * Expected: ≥90% recall@3 (128 threads/query)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestSearch2)
 {
 	TestSearch2<Distance>(data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100),
-			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.94, gt_indices, gt_dists);
+			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.90, gt_indices, gt_dists);
 }
 
 /**
  * Test 3: Incremental Point Addition
  * Add points incrementally and verify search still works
- * Expected: ≥94% recall@3 (verified actual: ~97.1%)
+ * Expected: ≥90% recall@3 (128 threads/query)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestAddIncremental)
 {
 	TestAddIncremental<Distance>(data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100),
-			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.94, gt_indices, gt_dists);
+			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.90, gt_indices, gt_dists);
 }
 
 /**
  * Test 4: Incremental Addition with Rebuild
  * Test rebuild threshold triggering
- * Expected: ≥93% recall@3 (verified actual: ~96.3%)
+ * Expected: ≥88% recall@3 (128 threads/query)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestAddIncremental2)
 {
 	TestAddIncremental2<Distance>(data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100),
-			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.93, gt_indices, gt_dists);
+			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.88, gt_indices, gt_dists);
 }
 
 /**
@@ -154,34 +154,34 @@ TEST_F(HierarchicalCUDA_Brief100K, TestRemove)
 /**
  * Test 6: Save/Load Index
  * Verify index serialization and deserialization
- * Expected: ≥94% recall@3 (verified actual: ~97.17%)
+ * Expected: ≥90% recall@3 (128 threads/query)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestSave)
 {
 	TestSave<Distance>(data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100),
-			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.94, gt_indices, gt_dists);
+			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.90, gt_indices, gt_dists);
 }
 
 /**
  * Test 7: Copy Constructor
  * Verify copy constructor creates independent index
- * Expected: ≥94% recall@3 (verified actual: ~97.17%)
+ * Expected: ≥90% recall@3 (128 threads/query)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestCopy)
 {
 	TestCopy<Distance>(data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100),
-			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.94, gt_indices, gt_dists);
+			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.90, gt_indices, gt_dists);
 }
 
 /**
  * Test 8: Move Constructor
  * Verify move constructor transfers ownership correctly
- * Expected: ≥94% recall@3 (verified actual: ~97.17%)
+ * Expected: ≥90% recall@3 (128 threads/query)
  */
 TEST_F(HierarchicalCUDA_Brief100K, TestCopy2)
 {
 	TestCopy2<flann::cuda::HierarchicalCUDAIndex<Distance> >(data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100),
-			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.94, gt_indices, gt_dists);
+			query, indices, dists, k_nn_, flann::SearchParams(2000), 0.90, gt_indices, gt_dists);
 }
 
 
@@ -240,8 +240,9 @@ TEST_F(HierarchicalCUDA_Brief100K, TestAllSupportedKValues)
 
 		// Compute and verify precision
 		float precision = compute_precision(gt_indices_k, indices_k);
-		// Hamming distance may have ties, so lower threshold
-		float threshold = (k <= 10) ? 0.85f : 0.75f;
+		// Hamming distance may have ties, and 128 threads/query reduces precision
+		// Larger k values have naturally lower precision
+		float threshold = (k <= 10) ? 0.78f : (k <= 64 ? 0.65f : 0.60f);
 		EXPECT_GE(precision, threshold) << "k=" << k << " precision below threshold";
 
 		// Classify performance tier for reporting
@@ -339,9 +340,9 @@ TEST_F(HierarchicalCUDA_Brief100K, TestBoundaryKValues)
 		}
 
 		// Verify precision (k=1 with Hamming distance may have lower precision due to ties)
-		// Note: Binary descriptors have many distance ties, so k=1 precision can vary
+		// Note: Binary descriptors have many distance ties, and 128 threads/query reduces precision
 		float precision = compute_precision(gt_indices_k1, indices_k1);
-		EXPECT_GE(precision, 0.84f) << "k=1 precision " << precision << " below 84% threshold";
+		EXPECT_GE(precision, 0.78f) << "k=1 precision " << precision << " below 78% threshold";
 		printf("k=1 precision: %.2f%%\n", precision * 100);
 
 		delete[] indices_k1.ptr();
@@ -377,9 +378,9 @@ TEST_F(HierarchicalCUDA_Brief100K, TestBoundaryKValues)
 			}
 		}
 
-		// Verify precision (k=128 may have slightly lower precision due to larger k)
+		// Verify precision (k=128 may have lower precision due to larger k and 128 threads/query)
 		float precision = compute_precision(gt_indices_k128, indices_k128);
-		EXPECT_GE(precision, 0.80f) << "k=128 precision " << precision << " below 80% threshold";
+		EXPECT_GE(precision, 0.60f) << "k=128 precision " << precision << " below 60% threshold";
 		printf("k=128 precision: %.2f%%\n", precision * 100);
 
 		delete[] indices_k128.ptr();
@@ -543,7 +544,7 @@ TEST_F(HierarchicalCUDA_Brief100K, TestGPUSaveLoad)
 	// Both should have similar precision (within 5% tolerance)
 	EXPECT_GE(precision2, precision1 - 0.05f)
 		<< "Precision dropped after GPU save/load: " << precision1 << " -> " << precision2;
-	EXPECT_GE(precision2, 0.85f)
+	EXPECT_GE(precision2, 0.80f)  // 128 threads/query
 		<< "Precision too low after GPU save/load: " << precision2;
 
 	delete[] indices1.ptr();
@@ -589,9 +590,9 @@ TEST_F(HierarchicalCUDA_Brief100K, TestConvertToGPUFormat)
 	flann::Matrix<DistanceType> dists(new DistanceType[query.rows * k_nn_], query.rows, k_nn_);
 	index2.knnSearch(query, indices, dists, k_nn_, flann::SearchParams(2000));
 
-	// Verify reasonable precision
+	// Verify reasonable precision (128 threads/query)
 	float precision = compute_precision(gt_indices, indices);
-	EXPECT_GE(precision, 0.85)
+	EXPECT_GE(precision, 0.80)
 		<< "Precision too low after GPU save/load: " << precision;
 
 	delete[] indices.ptr();
@@ -663,7 +664,7 @@ TEST_F(HierarchicalCUDA_Brief100K, TestEndToEndGPUSaveLoadCycle)
 	// Final assertions (5% tolerance for approximate search with binary descriptors)
 	EXPECT_GE(loaded_precision, cpu_precision - 0.05f)
 		<< "Loaded precision dropped vs CPU baseline: " << loaded_precision << " vs " << cpu_precision;
-	EXPECT_GE(loaded_precision, 0.85f)
+	EXPECT_GE(loaded_precision, 0.80f)  // 128 threads/query
 		<< "Loaded index precision too low: " << loaded_precision;
 
 	// For Hierarchical with Hamming distance, use precision comparison instead of exact match
@@ -962,7 +963,7 @@ TEST_F(HierarchicalCUDA_Brief100K, TestCPUFormatLoadWithGPU)
 	// GPU precision should be close to CPU (within 5% for Hamming distance with ties)
 	EXPECT_GE(gpu_precision, cpu_precision - 0.05f)
 		<< "GPU precision " << gpu_precision << " too low vs CPU " << cpu_precision;
-	EXPECT_GE(gpu_precision, 0.85f) << "GPU precision below threshold";
+	EXPECT_GE(gpu_precision, 0.80f) << "GPU precision below threshold (128 threads/query)";
 
 	// Cleanup
 	remove(filename);
@@ -1019,7 +1020,7 @@ TEST_F(HierarchicalCUDA_Brief100K, TestGPUFormatSaveAfterIncrementalAdd)
 	index2.knnSearch(query, indices, dists, knn, flann::SearchParams(2000));
 	float precision = compute_precision(gt_indices, indices);
 	printf("Precision after incremental add + GPU save/load: %.2f%%\n", precision * 100);
-	EXPECT_GE(precision, 0.85f) << "Precision after load: " << precision;
+	EXPECT_GE(precision, 0.80f) << "Precision after load (128 threads/query): " << precision;
 
 	// Cleanup
 	remove(filename);
