@@ -373,6 +373,28 @@ Both CUDA and OpenCL backends are available for GPU acceleration. This section c
 
 ## Gotchas and Common Issues
 
+### Query Matrix Requirements
+
+GPU search requires contiguous query matrices for efficient upload:
+
+```cpp
+// CORRECT - contiguous allocation
+float* data = new float[num_queries * 128];
+flann::Matrix<float> queries(data, num_queries, 128);  // stride = cols * sizeof(T)
+
+// CORRECT - std::vector (always contiguous)
+std::vector<float> data(num_queries * 128);
+flann::Matrix<float> queries(data.data(), num_queries, 128);
+
+// WRONG - non-contiguous will throw FLANNException
+flann::Matrix<float> queries(ptr, rows, cols, custom_stride);  // stride != cols * sizeof(T)
+```
+
+**Dimension alignment:** For best performance, use dimensions that are multiples of 4 (e.g., 128, 256). Non-aligned dimensions (e.g., 127) work but require GPU padding and will produce a one-time warning:
+```
+[FLANN] Dimension 127 requires padding to 128. Use multiples of 4 for best performance.
+```
+
 ### 1. Must Call buildCUDAKnnSearch() Before Searching
 
 ```cpp

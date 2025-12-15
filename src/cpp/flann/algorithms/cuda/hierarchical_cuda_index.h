@@ -1153,45 +1153,32 @@ protected:
         CUDABuffer<int> gpu_indices(num_queries * knn);
         CUDABuffer<int> gpu_dists(num_queries * knn);
 
-        // Upload queries to GPU with GPU-side padding (faster than CPU padding)
-        // Check if queries are contiguous in memory (common case)
-        bool is_contiguous = true;
-        for (size_t i = 1; i < num_queries && is_contiguous; ++i) {
-            is_contiguous = (queries[i] == queries[i-1] + this->veclen_);
+        // Require contiguous queries (O(1) stride check instead of O(n) pointer loop)
+        if (queries.stride != this->veclen_ * sizeof(ElementType)) {
+            throw FLANNException(
+                "GPU search requires contiguous query matrix (stride must equal cols * sizeof(T)). "
+                "Allocate queries as: Matrix<T>(new T[rows * cols], rows, cols)");
         }
 
-        if (is_contiguous && (size_t)padded_bytes == this->veclen_) {
+        // One-time warning if padding is needed (non-multiple-of-4 dimension)
+        if ((size_t)padded_bytes != this->veclen_) {
+            static bool warned = false;
+            if (!warned) {
+                fprintf(stderr, "[FLANN] Dimension %zu requires padding to %d. "
+                    "Use multiples of 4 for best performance.\n",
+                    this->veclen_, padded_bytes);
+                warned = true;
+            }
+        }
+
+        // Upload queries to GPU
+        if ((size_t)padded_bytes == this->veclen_) {
             // Fast path: no padding needed, direct upload
             gpu_queries.upload(queries[0], num_queries * this->veclen_);
-        } else if (is_contiguous) {
-            // Medium path: contiguous queries, GPU-side padding
+        } else {
+            // Padding needed: upload raw then pad on GPU
             CUDABuffer<ElementType> raw_queries_gpu(num_queries * this->veclen_);
             raw_queries_gpu.upload(queries[0], num_queries * this->veclen_);
-
-            // Pad queries on GPU
-            if (!launch_pad_queries<ElementType>(
-                    raw_queries_gpu.get(),
-                    gpu_queries.get(),
-                    num_queries,
-                    this->veclen_,
-                    padded_bytes,
-                    nullptr)) {
-                throw FLANNException("Failed to launch GPU padding kernel");
-            }
-            // raw_queries_gpu freed when scope exits
-        } else {
-            // Slow path: non-contiguous queries, CPU gather + GPU padding
-            std::vector<ElementType> gathered_queries(num_queries * this->veclen_);
-            for (size_t i = 0; i < num_queries; ++i) {
-                std::memcpy(&gathered_queries[i * this->veclen_],
-                           queries[i],
-                           this->veclen_ * sizeof(ElementType));
-            }
-
-            CUDABuffer<ElementType> raw_queries_gpu(num_queries * this->veclen_);
-            raw_queries_gpu.upload(gathered_queries.data(), num_queries * this->veclen_);
-
-            // Pad queries on GPU
             if (!launch_pad_queries<ElementType>(
                     raw_queries_gpu.get(),
                     gpu_queries.get(),
