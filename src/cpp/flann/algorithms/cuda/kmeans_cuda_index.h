@@ -47,14 +47,16 @@
 #include "flann/algorithms/cuda/kmeans_node_gpu.h"
 #include "flann/util/gpu_saving.h"
 
-namespace flann {
-namespace cuda {
-
-// Only include kernel headers when compiling with nvcc
+// Only include kernel headers when compiling with nvcc (before namespace to avoid nesting)
 #ifdef __CUDACC__
 #include "flann/algorithms/cuda/kernels/kmeans_search_cooperative.cuh"
 #include "flann/algorithms/cuda/kernels/utility_kernels.cuh"
-#else
+#endif
+
+namespace flann {
+namespace cuda {
+
+#ifndef __CUDACC__
 // Forward declare kernel launch functions for non-CUDA compilation
 template<int K>
 bool launch_kmeans_search_cooperative(
@@ -130,6 +132,9 @@ public:
     typedef typename Distance::ResultType DistanceType;
     typedef typename KMeansIndex<Distance>::Node Node;
     typedef KMeansIndex<Distance> BaseClass;
+
+    // Bring base class knnSearch overloads into scope (prevents C++ name hiding)
+    using BaseClass::knnSearch;
 
     /**
      * @brief Get index type identifier

@@ -53,7 +53,7 @@ namespace cuda {
     do { \
         cudaError_t err = call; \
         if (err != cudaSuccess) { \
-            throw flann::FLANNException( \
+            throw ::flann::FLANNException( \
                 std::string("CUDA error at ") + __FILE__ + ":" + \
                 std::to_string(__LINE__) + " - " + \
                 cudaGetErrorString(err) + \
@@ -77,7 +77,7 @@ namespace cuda {
     do { \
         cudaError_t err = cudaGetLastError(); \
         if (err != cudaSuccess) { \
-            throw flann::FLANNException( \
+            throw ::flann::FLANNException( \
                 std::string("CUDA kernel launch error at ") + __FILE__ + ":" + \
                 std::to_string(__LINE__) + " - " + \
                 cudaGetErrorString(err) \

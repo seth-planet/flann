@@ -49,13 +49,8 @@
 namespace flann {
 namespace cuda {
 
-// Only include kernel headers when compiling with nvcc
-#ifdef __CUDACC__
-#include "flann/algorithms/cuda/kernels/hierarchical_search_kernel.cuh"
-#include "flann/algorithms/cuda/kernels/hierarchical_search_cooperative.cuh"
-#include "flann/algorithms/cuda/kernels/utility_kernels.cuh"
-#else
-// Forward declare kernel launch functions for non-CUDA compilation
+// Forward declare kernel launch functions (defined in hierarchical_cuda_kernels.cu)
+// These are always forward declared - definition is in the .cu compilation unit
 bool launch_hierarchical_search_cooperative(
     const unsigned char* dataset,
     const unsigned char* queries,
@@ -71,16 +66,7 @@ bool launch_hierarchical_search_cooperative(
     int branching,
     cudaStream_t stream = nullptr);
 
-// Forward declare padding kernel launcher (default args in kmeans_cuda_index.h)
-template<typename T>
-bool launch_pad_queries(
-    const T* src,
-    T* dst,
-    size_t num_queries,
-    size_t veclen,
-    size_t padded_veclen,
-    cudaStream_t stream);
-#endif
+// Note: launch_pad_queries is declared in kmeans_cuda_index.h (included first)
 
 /**
  * @brief Index parameters for Hierarchical CUDA index
@@ -141,6 +127,9 @@ public:
     typedef typename Distance::ResultType DistanceType;
     typedef HierarchicalClusteringIndex<Distance> BaseClass;
     typedef typename BaseClass::Node* NodePtr;
+
+    // Bring base class knnSearch overloads into scope (prevents C++ name hiding)
+    using BaseClass::knnSearch;
 
     // ========================================================================
     // Constructors and Lifecycle
