@@ -115,6 +115,18 @@ if (HDF5_FOUND)
         target_compile_options(benchmark_cpu_gpu_comparison PRIVATE -O3 -march=native)
         install(TARGETS benchmark_cpu_gpu_comparison DESTINATION bin)
         message(STATUS "Building benchmark_cpu_gpu_comparison")
+
+        # GPU pipeline equivalence test (CPU->GPU vs pure GPU)
+        add_executable(flann_gpu_pipeline_equivalence_test flann_gpu_pipeline_equivalence_test.cpp)
+        target_compile_definitions(flann_gpu_pipeline_equivalence_test PRIVATE FLANN_USE_CUDA)
+        target_include_directories(flann_gpu_pipeline_equivalence_test PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+        target_link_libraries(flann_gpu_pipeline_equivalence_test
+            ${LZ4_LINK_LIBRARIES}
+            flann_cuda
+            CUDA::cudart)
+        target_compile_options(flann_gpu_pipeline_equivalence_test PRIVATE -O3 -march=native)
+        install(TARGETS flann_gpu_pipeline_equivalence_test DESTINATION bin)
+        message(STATUS "Building flann_gpu_pipeline_equivalence_test")
     endif()
 endif()
 

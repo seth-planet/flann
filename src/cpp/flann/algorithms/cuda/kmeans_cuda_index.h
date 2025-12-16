@@ -52,7 +52,6 @@ namespace cuda {
 
 // Only include kernel headers when compiling with nvcc
 #ifdef __CUDACC__
-#include "flann/algorithms/cuda/kernels/kmeans_search_kernel.cuh"
 #include "flann/algorithms/cuda/kernels/kmeans_search_cooperative.cuh"
 #include "flann/algorithms/cuda/kernels/utility_kernels.cuh"
 #else
