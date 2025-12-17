@@ -465,16 +465,26 @@ public:
     /**
      * @brief Load index from file (auto-detects format)
      *
-     * Detects format by checking file signature:
+     * Detects format by checking file signature and index type:
      * - "FLANN_GPU_INDEX_v2.0" → GPU format (optimized single blob)
-     * - "FLANN_INDEX_v1.1" → CPU format (via BaseClass)
+     * - "FLANN_INDEX_v1.1" with FLANN_INDEX_HIERARCHICAL → CPU format
+     *   (loads via temp CPU index, then copies to CUDA index)
+     * - "FLANN_INDEX_v1.1" with FLANN_INDEX_HIERARCHICAL_CUDA → CPU format
+     *   (direct load via BaseClass)
+     *
+     * This allows loading indices saved by either:
+     * - HierarchicalCUDAIndex (saves as HIERARCHICAL_CUDA or GPU v2.0)
+     * - HierarchicalClusteringIndex (saves as HIERARCHICAL)
+     *
+     * **Important:** When loading pure CPU HIERARCHICAL format, the saved file
+     * must have been created with `save_dataset=true` so the dataset is embedded.
      *
      * @param stream Input file stream. Should be opened with "rb" mode.
      *               Stream position will be reset to 0 internally for CPU format.
      *               The stream is NOT closed by this method.
      *
      * @throws FLANNException if stream is invalid, file format is unrecognized,
-     *         or data type mismatches the index template parameter.
+     *         dataset not embedded (for CPU HIERARCHICAL), or data type mismatch.
      */
     void loadIndex(FILE* stream) override
     {

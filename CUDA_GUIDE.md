@@ -217,7 +217,28 @@ index.knnSearch(queries, indices, distances, k, params);
 
 ### Loading Indices (CPU and GPU Formats)
 
-CUDA index classes support loading both CPU (v1.1) and GPU (v2.0) format indices. The `loadIndex()` method auto-detects the format.
+CUDA index classes support loading multiple index formats. The `loadIndex()` method auto-detects the format and index type.
+
+#### Supported Index Formats
+
+| File Signature | Index Type | Source | Notes |
+|----------------|------------|--------|-------|
+| `FLANN_GPU_INDEX_v2.0` | GPU-optimized | HierarchicalCUDAIndex/KMeansCUDAIndex | Fastest loading |
+| `FLANN_INDEX_v1.1` | HIERARCHICAL_CUDA/KMEANS_CUDA | *CUDAIndex (without GPU init) | Direct load |
+| `FLANN_INDEX_v1.1` | HIERARCHICAL/KMEANS | CPU-only index classes | **NEW:** Loads via temp index |
+
+**NEW in this release:** You can now load indices saved by pure CPU index classes (`HierarchicalClusteringIndex`, `KMeansIndex`) directly into CUDA index classes. This enables:
+- Loading legacy indices created before CUDA support was added
+- Loading indices created by non-CUDA applications
+- Seamless CPU→GPU migration
+
+**Important:** When loading pure CPU format indices, the file must have been saved with `save_dataset=true`:
+```cpp
+// When saving CPU index for later GPU loading
+flann::HierarchicalClusteringIndexParams params(32, FLANN_CENTERS_RANDOM, 4, 100);
+params["save_dataset"] = true;  // Required for GPU loading
+index.save("model.idx");
+```
 
 #### Recommended Pattern: Via SavedIndexParams
 
@@ -243,7 +264,7 @@ flann::HierarchicalCUDAIndex<flann::Hamming<unsigned char>> index(
     dataset, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100));
 
 FILE* fin = fopen("model.idx", "rb");
-index.loadIndex(fin);  // Auto-detects CPU v1.1 or GPU v2.0 format
+index.loadIndex(fin);  // Auto-detects format and handles all supported types
 fclose(fin);
 
 // Still need buildCUDAKnnSearch() for GPU search
@@ -254,10 +275,11 @@ index.buildCUDAKnnSearch(k, flann::SearchParams(2000));
 
 #### Format Detection
 
-| File Signature | Format | After Load |
-|----------------|--------|------------|
-| `FLANN_GPU_INDEX_v2.0` | GPU v2.0 | GPU data already uploaded |
-| `FLANN_INDEX_v1.1` | CPU v1.1 | Tree loaded, needs GPU upload |
+| File Signature | Index Type | After Load |
+|----------------|------------|------------|
+| `FLANN_GPU_INDEX_v2.0` | Any | GPU data already uploaded |
+| `FLANN_INDEX_v1.1` | HIERARCHICAL/KMEANS | Tree loaded via copy, needs GPU upload |
+| `FLANN_INDEX_v1.1` | HIERARCHICAL_CUDA/KMEANS_CUDA | Tree loaded directly, needs GPU upload |
 
 #### When to Use GPU v2.0 Format
 
