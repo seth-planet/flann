@@ -1310,6 +1310,141 @@ TEST_F(KMeansCUDA_SIFT10K, TestIsolation_GPUSaveLoadIndependent)
     remove(filename);
 }
 
+// ============================================================================
+// CPU Format Loading Tests
+// ============================================================================
+
+/**
+ * Lightweight test class for CPU format loading tests.
+ * Uses minimal dataset to avoid fixture overhead issues.
+ */
+class KMeansCUDA_LoadTests : public ::testing::Test
+{
+protected:
+	typedef flann::L2<float> Distance;
+	typedef Distance::ElementType ElementType;
+	typedef Distance::ResultType DistanceType;
+	static constexpr size_t N = 1000;  // Small dataset
+	static constexpr size_t D = 32;    // Feature dimension
+	static constexpr size_t Q = 10;    // Query count
+	static constexpr unsigned int K = 5;
+
+	flann::Matrix<float> data;
+	flann::Matrix<float> query;
+
+	void SetUp() override
+	{
+		// Create synthetic data
+		float* data_ptr = new float[N * D];
+		float* query_ptr = new float[Q * D];
+
+		for (size_t i = 0; i < N * D; ++i) {
+			data_ptr[i] = static_cast<float>(rand()) / RAND_MAX;
+		}
+		for (size_t i = 0; i < Q * D; ++i) {
+			query_ptr[i] = static_cast<float>(rand()) / RAND_MAX;
+		}
+
+		data = flann::Matrix<float>(data_ptr, N, D);
+		query = flann::Matrix<float>(query_ptr, Q, D);
+	}
+
+	void TearDown() override
+	{
+		delete[] data.ptr();
+		delete[] query.ptr();
+	}
+};
+
+/**
+ * Test: Load CPU v1.1 KMEANS format (saved by KMeansIndex)
+ *
+ * This tests the core Issue 2 fix: loading a file saved by CPU-only
+ * KMeansIndex (index_type = FLANN_INDEX_KMEANS = 2)
+ * into KMeansCUDAIndex (which returns FLANN_INDEX_KMEANS_CUDA = 11).
+ *
+ * Before the fix, this would fail with:
+ * "Saved index type is different then the current index type"
+ */
+TEST_F(KMeansCUDA_LoadTests, LoadPureCPUKMeansFormat)
+{
+	const char* filename = "test_pure_cpu_kmeans.idx";
+	remove(filename);
+
+	// Step 1: Create and save using pure CPU KMeansIndex
+	{
+		// Create params with save_dataset=true so the dataset is embedded in the file
+		flann::KMeansIndexParams params(32, 11, FLANN_CENTERS_RANDOM, 0.2);
+		params["save_dataset"] = true;
+
+		flann::KMeansIndex<Distance> cpu_index(data, params);
+		cpu_index.buildIndex();
+
+		FILE* fout = fopen(filename, "wb");
+		ASSERT_NE(fout, nullptr);
+		cpu_index.saveIndex(fout);
+		fclose(fout);
+	}
+
+	// Step 2: Verify it's CPU v1.1 format with KMEANS type (not KMEANS_CUDA)
+	{
+		FILE* fin = fopen(filename, "rb");
+		ASSERT_NE(fin, nullptr);
+
+		// Should NOT be GPU v2.0 format
+		EXPECT_FALSE(flann::GPUIndexHeaderV2::detectV2Format(fin))
+			<< "Index should be CPU format";
+
+		// Read header and verify index type
+		rewind(fin);
+		flann::IndexHeader header = flann::load_header(fin);
+		EXPECT_EQ(header.h.index_type, FLANN_INDEX_KMEANS)
+			<< "Index type should be FLANN_INDEX_KMEANS (2), not KMEANS_CUDA (11)";
+		fclose(fin);
+	}
+
+	// Step 3: Load with KMeansCUDAIndex (this tests the fix!)
+	{
+		flann::KMeansCUDAIndex<Distance> cuda_index(
+			data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+
+		FILE* fin = fopen(filename, "rb");
+		ASSERT_NE(fin, nullptr);
+		ASSERT_NO_THROW(cuda_index.loadIndex(fin))
+			<< "KMeansCUDAIndex should accept FLANN_INDEX_KMEANS files";
+		fclose(fin);
+
+		// Step 4: Verify index loaded correctly
+		EXPECT_EQ(cuda_index.size(), N);
+		EXPECT_EQ(cuda_index.veclen(), D);
+
+		// Step 5: Enable GPU search and verify it works
+		cuda_index.buildCUDAKnnSearch(K, flann::SearchParams(128));
+		EXPECT_TRUE(cuda_index.isGPUSearchReady());
+
+		// Step 6: Search and verify results
+		flann::Matrix<int> indices(new int[Q * K], Q, K);
+		flann::Matrix<DistanceType> dists(new DistanceType[Q * K], Q, K);
+		cuda_index.knnSearch(query, indices, dists, K, flann::SearchParams(128));
+
+		// Check we got valid indices
+		bool valid = true;
+		for (size_t i = 0; i < Q && valid; ++i) {
+			for (size_t j = 0; j < K && valid; ++j) {
+				if (indices[i][j] < 0 || indices[i][j] >= (int)N) {
+					valid = false;
+				}
+			}
+		}
+		EXPECT_TRUE(valid) << "Search returned invalid indices";
+
+		delete[] indices.ptr();
+		delete[] dists.ptr();
+	}
+
+	remove(filename);
+}
+
 int main(int argc, char** argv)
 {
     testing::InitGoogleTest(&argc, argv);

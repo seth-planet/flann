@@ -1293,6 +1293,95 @@ TEST_F(HierarchicalCUDA_LoadTests, LoadCPUFormatSavedByCUDAIndex)
 }
 
 /**
+ * Test: Load CPU v1.1 HIERARCHICAL format (saved by HierarchicalClusteringIndex)
+ *
+ * This tests the core Issue 2 fix: loading a file saved by CPU-only
+ * HierarchicalClusteringIndex (index_type = FLANN_INDEX_HIERARCHICAL = 5)
+ * into HierarchicalCUDAIndex (which returns FLANN_INDEX_HIERARCHICAL_CUDA = 12).
+ *
+ * Before the fix, this would fail with:
+ * "Saved index type is different then the current index type"
+ */
+TEST_F(HierarchicalCUDA_LoadTests, LoadPureCPUHierarchicalFormat)
+{
+	const char* filename = "test_pure_cpu_hierarchical.idx";
+	remove(filename);
+
+	// Step 1: Create and save using pure CPU HierarchicalClusteringIndex
+	{
+		// Create params with save_dataset=true so the dataset is embedded in the file
+		flann::HierarchicalClusteringIndexParams params(32, FLANN_CENTERS_RANDOM, 4, 100);
+		params["save_dataset"] = true;
+
+		flann::HierarchicalClusteringIndex<Distance> cpu_index(data, params);
+		cpu_index.buildIndex();
+
+		FILE* fout = fopen(filename, "wb");
+		ASSERT_NE(fout, nullptr);
+		cpu_index.saveIndex(fout);
+		fclose(fout);
+	}
+
+	// Step 2: Verify it's CPU v1.1 format with HIERARCHICAL type (not HIERARCHICAL_CUDA)
+	{
+		FILE* fin = fopen(filename, "rb");
+		ASSERT_NE(fin, nullptr);
+
+		// Should NOT be GPU v2.0 format
+		EXPECT_FALSE(flann::GPUIndexHeaderV2::detectV2Format(fin))
+			<< "Index should be CPU format";
+
+		// Read header and verify index type
+		rewind(fin);
+		flann::IndexHeader header = flann::load_header(fin);
+		EXPECT_EQ(header.h.index_type, FLANN_INDEX_HIERARCHICAL)
+			<< "Index type should be FLANN_INDEX_HIERARCHICAL (5), not HIERARCHICAL_CUDA (12)";
+		fclose(fin);
+	}
+
+	// Step 3: Load with HierarchicalCUDAIndex (this tests the fix!)
+	{
+		flann::HierarchicalCUDAIndex<Distance> cuda_index(
+			data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100));
+
+		FILE* fin = fopen(filename, "rb");
+		ASSERT_NE(fin, nullptr);
+		ASSERT_NO_THROW(cuda_index.loadIndex(fin))
+			<< "HierarchicalCUDAIndex should accept FLANN_INDEX_HIERARCHICAL files";
+		fclose(fin);
+
+		// Step 4: Verify index loaded correctly
+		EXPECT_EQ(cuda_index.size(), N);
+		EXPECT_EQ(cuda_index.veclen(), D);
+
+		// Step 5: Enable GPU search and verify it works
+		cuda_index.buildCUDAKnnSearch(K, flann::SearchParams(256));
+		EXPECT_TRUE(cuda_index.isGPUSearchReady());
+
+		// Step 6: Search and verify results
+		flann::Matrix<int> indices(new int[Q * K], Q, K);
+		flann::Matrix<DistanceType> dists(new DistanceType[Q * K], Q, K);
+		cuda_index.knnSearch(query, indices, dists, K, flann::SearchParams(256));
+
+		// Check we got valid indices
+		bool valid = true;
+		for (size_t i = 0; i < Q && valid; ++i) {
+			for (size_t j = 0; j < K && valid; ++j) {
+				if (indices[i][j] < 0 || indices[i][j] >= (int)N) {
+					valid = false;
+				}
+			}
+		}
+		EXPECT_TRUE(valid) << "Search returned invalid indices";
+
+		delete[] indices.ptr();
+		delete[] dists.ptr();
+	}
+
+	remove(filename);
+}
+
+/**
  * Test: Verify loadIndex() handles null stream gracefully
  */
 TEST_F(HierarchicalCUDA_LoadTests, LoadNullStream)

@@ -487,20 +487,36 @@ public:
             // GPU v2.0 format - detectV2Format already restored position
             loadIndexV2(stream);
         } else {
-            // CPU v1.1 format - must reset stream for BaseClass::loadIndex
-            // Use rewind() for robustness:
-            // 1. Resets position to 0 (required for LoadArchive which reads header)
-            // 2. Clears EOF and error flags (fseek does not do this)
-            // This matches the pattern in flann.hpp:load_saved_index() line 673
+            // CPU v1.1 format - peek at header to determine exact index type
+            std::rewind(stream);
+            IndexHeader header = load_header(stream);
             std::rewind(stream);
 
-            // Verify position is at start
-            if (std::ftell(stream) != 0) {
-                throw FLANNException("loadIndex: failed to rewind stream to position 0");
-            }
+            if (header.h.index_type == FLANN_INDEX_HIERARCHICAL) {
+                // CPU HIERARCHICAL format - load via temporary CPU index
+                // This avoids type mismatch error in NNIndex::serialize()
+                freeGPUMemory();
 
-            freeGPUMemory();
-            BaseClass::loadIndex(stream);
+                // Load into temporary CPU index (type matches file)
+                // Note: saved file must have save_dataset=true, otherwise load fails
+                HierarchicalClusteringIndex<Distance> temp_cpu;
+                temp_cpu.loadIndex(stream);
+
+                // Use existing copy constructor + swap idiom
+                // The copy constructor handles all tree copying via BaseClass(other)
+                HierarchicalCUDAIndex temp_cuda(temp_cpu);
+                this->swap(temp_cuda);
+
+            } else if (header.h.index_type == FLANN_INDEX_HIERARCHICAL_CUDA) {
+                // CPU v1.1 format saved as CUDA type - direct load works
+                freeGPUMemory();
+                BaseClass::loadIndex(stream);
+            } else {
+                throw FLANNException(
+                    "Unsupported index type for HierarchicalCUDAIndex. "
+                    "Expected FLANN_INDEX_HIERARCHICAL or FLANN_INDEX_HIERARCHICAL_CUDA, got: " +
+                    std::to_string(header.h.index_type));
+            }
         }
     }
 
