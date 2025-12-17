@@ -75,6 +75,10 @@ public:
 
     typedef NNIndex<Distance> BaseClass;
 
+    // Bring in base class overloads to avoid partial override warnings
+    using BaseClass::knnSearch;
+    using BaseClass::radiusSearch;
+
     int visited_leafs;
 
     typedef bool needs_kdtree_distance;

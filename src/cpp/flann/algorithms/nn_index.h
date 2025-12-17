@@ -33,6 +33,11 @@
 
 #include <vector>
 
+// OpenMP support
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #include "flann/general.h"
 #include "flann/util/matrix.h"
 #include "flann/util/params.h"
@@ -320,10 +325,14 @@ public:
     	int count = 0;
 
     	if (use_heap) {
+#ifdef _OPENMP
 #pragma omp parallel num_threads(params.cores)
+#endif
     		{
     			KNNResultSet2<DistanceType> resultSet(knn);
+#ifdef _OPENMP
 #pragma omp for schedule(static) reduction(+:count)
+#endif
     			for (int i = 0; i < (int)queries.rows; i++) {
     				resultSet.clear();
     				findNeighbors(resultSet, queries[i], params);
@@ -340,10 +349,14 @@ public:
         }
 #endif /* FLANN_USE_OPENCL */
     	else {
+#ifdef _OPENMP
 #pragma omp parallel num_threads(params.cores)
+#endif
     		{
     			KNNSimpleResultSet<DistanceType> resultSet(knn);
+#ifdef _OPENMP
 #pragma omp for schedule(static) reduction(+:count)
+#endif
     			for (int i = 0; i < (int)queries.rows; i++) {
     				resultSet.clear();
     				findNeighbors(resultSet, queries[i], params);
@@ -413,10 +426,14 @@ public:
 
 		int count = 0;
 		if (use_heap) {
+#ifdef _OPENMP
 #pragma omp parallel num_threads(params.cores)
+#endif
 			{
 				KNNResultSet2<DistanceType> resultSet(knn);
+#ifdef _OPENMP
 #pragma omp for schedule(static) reduction(+:count)
+#endif
 				for (int i = 0; i < (int)queries.rows; i++) {
 					resultSet.clear();
 					findNeighbors(resultSet, queries[i], params);
@@ -462,10 +479,14 @@ public:
         }
 #endif /* FLANN_USE_OPENCL */
 		else {
+#ifdef _OPENMP
 #pragma omp parallel num_threads(params.cores)
+#endif
 			{
 				KNNSimpleResultSet<DistanceType> resultSet(knn);
+#ifdef _OPENMP
 #pragma omp for schedule(static) reduction(+:count)
+#endif
 				for (int i = 0; i < (int)queries.rows; i++) {
 					resultSet.clear();
 					findNeighbors(resultSet, queries[i], params);
@@ -533,10 +554,14 @@ public:
     	else max_neighbors = std::min(max_neighbors,(int)num_neighbors);
 
     	if (max_neighbors==0) {
+#ifdef _OPENMP
 #pragma omp parallel num_threads(params.cores)
+#endif
     		{
     			CountRadiusResultSet<DistanceType> resultSet(radius);
+#ifdef _OPENMP
 #pragma omp for schedule(static) reduction(+:count)
+#endif
     			for (int i = 0; i < (int)queries.rows; i++) {
     				resultSet.clear();
     				findNeighbors(resultSet, queries[i], params);
@@ -548,10 +573,14 @@ public:
     		// explicitly indicated to use unbounded radius result set
     		// and we know there'll be enough room for resulting indices and dists
     		if (params.max_neighbors<0 && (num_neighbors>=size())) {
+#ifdef _OPENMP
 #pragma omp parallel num_threads(params.cores)
+#endif
     			{
     				RadiusResultSet<DistanceType> resultSet(radius);
+#ifdef _OPENMP
 #pragma omp for schedule(static) reduction(+:count)
+#endif
     				for (int i = 0; i < (int)queries.rows; i++) {
     					resultSet.clear();
     					findNeighbors(resultSet, queries[i], params);
@@ -569,10 +598,14 @@ public:
     		}
     		else {
     			// number of neighbors limited to max_neighbors
+#ifdef _OPENMP
 #pragma omp parallel num_threads(params.cores)
+#endif
     			{
     				KNNRadiusResultSet<DistanceType> resultSet(radius, max_neighbors);
+#ifdef _OPENMP
 #pragma omp for schedule(static) reduction(+:count)
+#endif
     				for (int i = 0; i < (int)queries.rows; i++) {
     					resultSet.clear();
     					findNeighbors(resultSet, queries[i], params);
@@ -639,10 +672,14 @@ public:
     	int count = 0;
     	// just count neighbors
     	if (params.max_neighbors==0) {
+#ifdef _OPENMP
 #pragma omp parallel num_threads(params.cores)
+#endif
     		{
     			CountRadiusResultSet<DistanceType> resultSet(radius);
+#ifdef _OPENMP
 #pragma omp for schedule(static) reduction(+:count)
+#endif
     			for (int i = 0; i < (int)queries.rows; i++) {
     				resultSet.clear();
     				findNeighbors(resultSet, queries[i], params);
@@ -656,10 +693,14 @@ public:
 
     		if (params.max_neighbors<0) {
     			// search for all neighbors
+#ifdef _OPENMP
 #pragma omp parallel num_threads(params.cores)
+#endif
     			{
     				RadiusResultSet<DistanceType> resultSet(radius);
+#ifdef _OPENMP
 #pragma omp for schedule(static) reduction(+:count)
+#endif
     				for (int i = 0; i < (int)queries.rows; i++) {
     					resultSet.clear();
     					findNeighbors(resultSet, queries[i], params);
@@ -676,10 +717,14 @@ public:
     		}
     		else {
     			// number of neighbors limited to max_neighbors
+#ifdef _OPENMP
 #pragma omp parallel num_threads(params.cores)
+#endif
     			{
     				KNNRadiusResultSet<DistanceType> resultSet(radius, params.max_neighbors);
+#ifdef _OPENMP
 #pragma omp for schedule(static) reduction(+:count)
+#endif
     				for (int i = 0; i < (int)queries.rows; i++) {
     					resultSet.clear();
     					findNeighbors(resultSet, queries[i], params);
