@@ -1178,6 +1178,130 @@ TEST_F(HierarchicalCUDA_Brief100K, TestIsolation_GPUSaveLoadIndependent)
 	remove(filename);
 }
 
+/**
+ * Lightweight test class for CPU format loading tests.
+ * Uses minimal dataset to avoid fixture overhead issues.
+ */
+class HierarchicalCUDA_LoadTests : public ::testing::Test
+{
+protected:
+	typedef flann::Hamming<unsigned char> Distance;
+	typedef Distance::ElementType ElementType;
+	typedef Distance::ResultType DistanceType;
+	static constexpr size_t N = 1000;  // Small dataset
+	static constexpr size_t D = 32;    // Descriptor dimension
+	static constexpr size_t Q = 10;    // Query count
+	static constexpr unsigned int K = 3;
+
+	flann::Matrix<unsigned char> data;
+	flann::Matrix<unsigned char> query;
+
+	void SetUp() override
+	{
+		// Create synthetic data
+		unsigned char* data_ptr = new unsigned char[N * D];
+		unsigned char* query_ptr = new unsigned char[Q * D];
+
+		for (size_t i = 0; i < N * D; ++i) {
+			data_ptr[i] = static_cast<unsigned char>(rand() % 256);
+		}
+		for (size_t i = 0; i < Q * D; ++i) {
+			query_ptr[i] = static_cast<unsigned char>(rand() % 256);
+		}
+
+		data = flann::Matrix<unsigned char>(data_ptr, N, D);
+		query = flann::Matrix<unsigned char>(query_ptr, Q, D);
+	}
+
+	void TearDown() override
+	{
+		delete[] data.ptr();
+		delete[] query.ptr();
+	}
+};
+
+/**
+ * Test: Load CPU v1.1 format index saved by HierarchicalCUDAIndex
+ *
+ * When HierarchicalCUDAIndex saves WITHOUT GPU initialization (gpu_initialized_=false),
+ * it falls back to BaseClass::saveIndex() which writes CPU v1.1 format.
+ * This test verifies we can load that format back.
+ */
+TEST_F(HierarchicalCUDA_LoadTests, LoadCPUFormatSavedByCUDAIndex)
+{
+	const char* filename = "test_cuda_cpu_format.idx";
+	remove(filename);
+
+	// Step 1: Create CUDA index, build (CPU tree only), save WITHOUT GPU init
+	{
+		flann::HierarchicalCUDAIndex<Distance> cuda_index(
+			data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100));
+		cuda_index.buildIndex();  // Builds CPU tree only
+
+		// Save - since gpu_initialized_ is false, falls back to CPU format
+		FILE* fout = fopen(filename, "wb");
+		ASSERT_NE(fout, nullptr);
+		cuda_index.saveIndex(fout);
+		fclose(fout);
+	}
+
+	// Step 2: Verify it's CPU format (not GPU v2.0)
+	{
+		FILE* fin = fopen(filename, "rb");
+		ASSERT_NE(fin, nullptr);
+		EXPECT_FALSE(flann::GPUIndexHeaderV2::detectV2Format(fin))
+			<< "Index should be CPU format when saved without GPU init";
+		fclose(fin);
+	}
+
+	// Step 3: Load back with CUDA index (tests our rewind fix)
+	{
+		flann::HierarchicalCUDAIndex<Distance> loaded_index(
+			data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100));
+
+		FILE* fin = fopen(filename, "rb");
+		ASSERT_NE(fin, nullptr);
+		ASSERT_NO_THROW(loaded_index.loadIndex(fin))
+			<< "loadIndex() should work with rewind() fix";
+		fclose(fin);
+
+		// Step 4: Verify GPU search can be enabled on loaded index
+		loaded_index.buildCUDAKnnSearch(K, flann::SearchParams(256));
+		EXPECT_TRUE(loaded_index.isGPUSearchReady());
+
+		// Step 5: Search and verify results
+		flann::Matrix<int> indices(new int[Q * K], Q, K);
+		flann::Matrix<DistanceType> dists(new DistanceType[Q * K], Q, K);
+		loaded_index.knnSearch(query, indices, dists, K, flann::SearchParams(256));
+
+		// Check we got valid indices
+		bool valid = true;
+		for (size_t i = 0; i < Q && valid; ++i) {
+			for (size_t j = 0; j < K && valid; ++j) {
+				if (indices[i][j] < 0 || indices[i][j] >= (int)N) {
+					valid = false;
+				}
+			}
+		}
+		EXPECT_TRUE(valid) << "Search returned invalid indices";
+
+		delete[] indices.ptr();
+		delete[] dists.ptr();
+	}
+
+	remove(filename);
+}
+
+/**
+ * Test: Verify loadIndex() handles null stream gracefully
+ */
+TEST_F(HierarchicalCUDA_LoadTests, LoadNullStream)
+{
+	flann::HierarchicalCUDAIndex<Distance> cuda_index(
+		data, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100));
+	EXPECT_THROW(cuda_index.loadIndex(nullptr), flann::FLANNException);
+}
+
 int main(int argc, char** argv)
 {
 	testing::InitGoogleTest(&argc, argv);

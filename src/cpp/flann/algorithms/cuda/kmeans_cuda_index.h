@@ -567,14 +567,36 @@ public:
      * - "FLANN_GPU_INDEX_v2.0" → GPU format (optimized single blob)
      * - "FLANN_INDEX_v1.1" → CPU format (via BaseClass)
      *
-     * @param stream Input file stream
+     * @param stream Input file stream. Should be opened with "rb" mode.
+     *               Stream position will be reset to 0 internally for CPU format.
+     *               The stream is NOT closed by this method.
+     *
+     * @throws FLANNException if stream is invalid, file format is unrecognized,
+     *         or data type mismatches the index template parameter.
      */
     void loadIndex(FILE* stream) override
     {
+        // Defensive validation: check stream is valid
+        if (stream == nullptr) {
+            throw FLANNException("loadIndex: stream is null");
+        }
+
         if (GPUIndexHeaderV2::detectV2Format(stream)) {
+            // GPU v2.0 format - detectV2Format already restored position
             loadIndexV2(stream);
         } else {
-            // Fall back to CPU format
+            // CPU v1.1 format - must reset stream for BaseClass::loadIndex
+            // Use rewind() for robustness:
+            // 1. Resets position to 0 (required for LoadArchive which reads header)
+            // 2. Clears EOF and error flags (fseek does not do this)
+            // This matches the pattern in flann.hpp:load_saved_index() line 673
+            std::rewind(stream);
+
+            // Verify position is at start
+            if (std::ftell(stream) != 0) {
+                throw FLANNException("loadIndex: failed to rewind stream to position 0");
+            }
+
             freeGPUMemory();
             BaseClass::loadIndex(stream);
         }

@@ -106,19 +106,43 @@ struct GPUIndexHeaderV2
 
     /**
      * Detect v2.0 GPU format by peeking at file signature without consuming stream.
+     *
+     * @param stream File stream to check. Position will be restored after detection.
+     * @return true if stream contains GPU v2.0 format, false otherwise (or on error).
+     *
+     * @note This function handles edge cases defensively:
+     *       - Returns false for null stream
+     *       - Clears EOF/error flags after reads (for subsequent reads to work)
+     *       - Restores stream position on both success and failure
      */
     static bool detectV2Format(FILE* stream)
     {
+        if (stream == nullptr) {
+            return false;
+        }
+
         long pos = ftell(stream);
+        if (pos < 0) {
+            // ftell failed (e.g., stream not seekable)
+            return false;
+        }
+
         char sig[24];
         memset(sig, 0, sizeof(sig));
 
         if (fread(sig, sizeof(sig), 1, stream) != 1) {
+            // Read failed - restore position and clear error flags
             fseek(stream, pos, SEEK_SET);
+            clearerr(stream);  // Clear EOF/error flags for subsequent reads
             return false;
         }
 
-        fseek(stream, pos, SEEK_SET);
+        // Restore position
+        if (fseek(stream, pos, SEEK_SET) != 0) {
+            clearerr(stream);
+            return false;
+        }
+
         return strncmp(sig, FLANN_GPU_SIGNATURE_V2_, strlen(FLANN_GPU_SIGNATURE_V2_)) == 0;
     }
 

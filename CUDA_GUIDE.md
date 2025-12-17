@@ -215,6 +215,50 @@ index.buildCUDAKnnSearch(10, flann::SearchParams(128));
 index.knnSearch(queries, indices, distances, k, params);
 ```
 
+### Loading Indices (CPU and GPU Formats)
+
+CUDA index classes support loading both CPU (v1.1) and GPU (v2.0) format indices. The `loadIndex()` method auto-detects the format.
+
+#### Recommended Pattern: Via SavedIndexParams
+
+```cpp
+// Works with both CPU and GPU format files
+flann::Matrix<float> empty_data;
+flann::Index<flann::L2<float>> index(empty_data, flann::SavedIndexParams("model.idx"));
+
+// CRITICAL: Always call buildCUDAKnnSearch() after loading
+// - For CPU format: uploads tree to GPU (~200-500ms)
+// - For GPU format: just compiles JIT kernels (~50-100ms)
+index.buildCUDAKnnSearch(k, flann::SearchParams(checks));
+
+// Now search works
+index.knnSearch(queries, indices, dists, k, params);
+```
+
+#### Advanced Pattern: Direct loadIndex() Call
+
+```cpp
+// Direct loading (for advanced use cases)
+flann::HierarchicalCUDAIndex<flann::Hamming<unsigned char>> index(
+    dataset, flann::HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4, 100));
+
+FILE* fin = fopen("model.idx", "rb");
+index.loadIndex(fin);  // Auto-detects CPU v1.1 or GPU v2.0 format
+fclose(fin);
+
+// Still need buildCUDAKnnSearch() for GPU search
+index.buildCUDAKnnSearch(k, flann::SearchParams(2000));
+```
+
+**Note:** Direct `loadIndex()` calls will reset the stream position to 0 internally for CPU format files. The stream is NOT closed by the method.
+
+#### Format Detection
+
+| File Signature | Format | After Load |
+|----------------|--------|------------|
+| `FLANN_GPU_INDEX_v2.0` | GPU v2.0 | GPU data already uploaded |
+| `FLANN_INDEX_v1.1` | CPU v1.1 | Tree loaded, needs GPU upload |
+
 #### When to Use GPU v2.0 Format
 
 | Use Case | Recommendation |
