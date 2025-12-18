@@ -333,35 +333,43 @@ index.buildCUDAKnnSearch(k, flann::SearchParams(2000));
 - **Explicit GPU setup** - call `buildCUDAKnnSearch(k)` once to enable GPU search
 - **GPU v2.0 format** - pre-built GPU indices for fast cold starts
 
-### Benchmark Results (December 2024)
+### Benchmark Results (December 2025)
 
-#### Search Performance (k=10, checks=128)
+#### Complete Dataset Coverage - CPU vs CUDA Search (k=10, checks=128)
 
-| Algorithm | Dataset | CPU Search | GPU Search | Speedup | GPU Precision |
-|-----------|---------|------------|------------|---------|---------------|
-| Hierarchical | 77K × 64 binary | 17.8 ms | 9.8 ms | **1.8x** | 90.2% |
-| K-Means | 100K × 128 float | 92.4 ms | 9.7 ms | **9.5x** | 89.4% |
+| Dataset | Size | Type | Index | CPU Search | CUDA Search | Speedup | CUDA Precision |
+|---------|------|------|-------|------------|-------------|---------|----------------|
+| sift10K.h5 | 9K × 128 | float | K-Means | 5.4 ms | 5.4 ms | **1.0x** | 99.1% |
+| sift100K.h5 | 99K × 128 | float | K-Means | 128 ms | 11 ms | **11.6x** | 88.8% |
+| cloud.h5 | 177K × 3 | float | K-Means | 328 ms | 32 ms | **10.3x** | 99.98% |
+| brief100K.h5 | 100K × 32 | binary | Hierarchical | 24 ms | 4 ms | **6.0x** | 82.3% |
+| **binary1M_512bit.h5** | **1M × 64** | **binary** | **Hierarchical** | **9.6 s** | **338 ms** | **28.3x** | **80.4%** |
 
-#### Index Loading Performance
+*Note: Search times for 1K-100K queries depending on dataset. Byte datasets (sift*_byte.h5) not supported by CUDA K-Means.*
 
-| Format | Binary Hierarchical | Float KMeans | Notes |
-|--------|---------------------|--------------|-------|
-| CPU-only load | 9.5 ms | 98 ms | No GPU setup |
-| CPU-to-GPU | 37 ms | 251 ms | Includes GPU upload |
-| **GPU v2.0** | **9 ms** | **121 ms** | Pre-built GPU arrays |
-| **Speedup** | **4.2x** | **2.1x** | vs CPU-to-GPU |
+#### Throughput Comparison (queries/sec)
 
-#### Throughput Comparison
+| Dataset | CPU Throughput | CUDA Throughput | Speedup |
+|---------|----------------|-----------------|---------|
+| sift10K.h5 | 185K q/s | 186K q/s | 1.0x |
+| sift100K.h5 | 7.8K q/s | 91K q/s | 11.7x |
+| cloud.h5 | 60K q/s | 618K q/s | 10.3x |
+| brief100K.h5 | 41K q/s | 243K q/s | 5.9x |
+| **binary1M_512bit.h5** | **10.4K q/s** | **296K q/s** | **28.4x** |
 
-| Scenario | Binary Hierarchical | Float KMeans |
-|----------|---------------------|--------------|
-| CPU-only | 56,000 q/s | 11,000 q/s |
-| GPU | 102,000 q/s | 103,000 q/s |
-| **Speedup** | **1.8x** | **9.4x** |
+#### Index Loading Performance (GPU v2.0 Format)
+
+| Dataset | CPU-to-GPU Ready | GPU v2.0 Ready | Speedup | File Size Overhead |
+|---------|------------------|----------------|---------|-------------------|
+| sift10K.h5 | 41 ms | 42 ms | ~1.0x | +3% |
+| sift100K.h5 | 324 ms | 170 ms | **1.9x** | -1% |
+| cloud.h5 | 58 ms | 31 ms | **1.9x** | 0% |
+| brief100K.h5 | 44 ms | 13 ms | **3.5x** | +4% |
+| **binary1M_512bit.h5** | **826 ms** | **172 ms** | **4.8x** | +7% |
 
 **Test Coverage:** All CUDA tests passing
 
-### CUDA vs OpenCL Comparison (December 2024)
+### CUDA vs OpenCL Comparison (December 2025)
 
 Both CUDA and OpenCL backends are available for GPU acceleration. This section compares their performance using the same CPU index files with proper warmup queries.
 

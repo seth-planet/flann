@@ -927,6 +927,7 @@ int main(int argc, char** argv) {
         // All available datasets
         datasets.push_back({"datasets/sift10K.h5", "kmeans"});
         datasets.push_back({"datasets/sift100K.h5", "kmeans"});
+        datasets.push_back({"datasets/cloud.h5", "kmeans"});  // 3D point cloud (177K × 3 float)
         datasets.push_back({"datasets/brief100K.h5", "hierarchical"});
         datasets.push_back({"datasets/binary1M_512bit.h5", "hierarchical"});
     } else if (!config.dataset_file.empty()) {
@@ -935,7 +936,8 @@ int main(int argc, char** argv) {
         if (type == "auto") {
             // Auto-detect based on filename
             if (config.dataset_file.find("sift") != string::npos ||
-                config.dataset_file.find("float") != string::npos) {
+                config.dataset_file.find("float") != string::npos ||
+                config.dataset_file.find("cloud") != string::npos) {
                 type = "kmeans";
             } else {
                 type = "hierarchical";
