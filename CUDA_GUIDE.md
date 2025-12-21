@@ -176,6 +176,97 @@ flann::Matrix<int> distances(new int[num_queries * k], num_queries, k);
 index.knnSearch(queries, indices, distances, k, flann::SearchParams(2000));
 ```
 
+### Device Pointer API (Zero-Copy GPU Search)
+
+For GPU-resident pipelines where data never leaves device memory, FLANN provides `knnSearchGPUDirect()` which accepts CUDA device pointers directly. This eliminates redundant CPU↔GPU memory copies, providing significant performance benefits:
+
+| Metric | Standard knnSearchGPU | knnSearchGPUDirect |
+|--------|----------------------|-------------------|
+| PCIe transfers | 4× (queries down, up; results down, up) | 0× |
+| Sync points | 1× (forced) | 0× (fully async) |
+| Overhead per batch | 2-5ms | ~0ms |
+
+#### K-Means CUDA (Float Data)
+
+```cpp
+#include <cuda_runtime.h>
+
+// Data already on GPU (e.g., from feature extraction)
+float* d_queries;    // [num_queries × 128] on device
+int* d_indices;      // Output [num_queries × k] on device
+float* d_dists;      // Output [num_queries × k] on device
+
+// Allocate device memory
+cudaMalloc(&d_queries, num_queries * 128 * sizeof(float));
+cudaMalloc(&d_indices, num_queries * k * sizeof(int));
+cudaMalloc(&d_dists, num_queries * k * sizeof(float));
+
+// Build index and prepare GPU
+flann::Index<flann::L2<float>> index(dataset, flann::KMeansCUDAIndexParams(32));
+index.buildIndex();
+index.prepareGPUIndex();  // or buildCUDAKnnSearch(k, params)
+
+// Zero-copy search - data stays on GPU
+index.knnSearchGPUDirect(d_queries, d_indices, d_dists,
+                          num_queries, k, flann::SearchParams(128));
+
+// Caller synchronizes when needed
+cudaDeviceSynchronize();
+```
+
+#### Hierarchical CUDA (Binary Data)
+
+```cpp
+// Binary descriptors already on GPU
+unsigned char* d_queries;  // [num_queries × 32] on device
+int* d_indices;            // Output [num_queries × k] on device
+int* d_dists;              // Output [num_queries × k] (Hamming distances)
+
+cudaMalloc(&d_queries, num_queries * 32 * sizeof(unsigned char));
+cudaMalloc(&d_indices, num_queries * k * sizeof(int));
+cudaMalloc(&d_dists, num_queries * k * sizeof(int));
+
+flann::Index<flann::Hamming<unsigned char>> index(dataset,
+    flann::HierarchicalCUDAIndexParams(32));
+index.buildIndex();
+index.prepareGPUIndex();
+
+// Zero-copy search
+index.knnSearchGPUDirect(d_queries, d_indices, d_dists,
+                          num_queries, k, flann::SearchParams(256));
+cudaDeviceSynchronize();
+```
+
+#### Custom CUDA Stream Support
+
+For fully async pipelines, provide your own CUDA stream:
+
+```cpp
+cudaStream_t my_stream;
+cudaStreamCreate(&my_stream);
+
+// Feature extraction on my_stream
+extract_features<<<grid, block, 0, my_stream>>>(images, d_queries);
+
+// k-NN search on same stream (auto-ordered after extraction)
+index.knnSearchGPUDirect(d_queries, d_indices, d_dists,
+                          num_queries, k, flann::SearchParams(), my_stream);
+
+// Post-processing on same stream
+process_matches<<<grid, block, 0, my_stream>>>(d_indices, d_dists);
+
+// Single sync at end
+cudaStreamSynchronize(my_stream);
+```
+
+#### API Notes
+
+- **Caller owns memory**: Allocate device memory with correct sizes before calling
+- **Caller syncs**: No internal synchronization; call `cudaStreamSynchronize()` before reading results
+- **Padding handled internally**: If `veclen % 4 != 0`, temporary padding is applied on GPU
+- **Output types**: Indices are always `int*`. Distances are `float*` for K-Means, `int*` for Hierarchical
+- **Supported k values**: Same as `knnSearchGPU()` (see [Disadvantages and Limitations](#disadvantages-and-limitations))
+
 ### GPU Index Format (v2.0)
 
 FLANN provides a GPU-optimized index format (v2.0) that dramatically reduces cold-start times by storing pre-computed GPU arrays directly in the file.

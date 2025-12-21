@@ -643,6 +643,116 @@ public:
         }
     }
 
+    /**
+     * @brief GPU-direct k-NN search with device pointers (zero-copy)
+     *
+     * Performs k-nearest neighbor search using device-resident data,
+     * eliminating CPU<->GPU memory transfers for queries and results.
+     * Ideal for GPU-resident pipelines where data never leaves device memory.
+     *
+     * @param d_queries Device pointer to query descriptors [num_queries x veclen]
+     *                  Must be contiguous row-major layout.
+     * @param d_indices Device pointer for output indices [num_queries x knn]
+     *                  Will contain point indices as int.
+     * @param d_dists   Device pointer for output distances [num_queries x knn]
+     *                  Hamming distances as int (popcount).
+     * @param num_queries Number of query vectors
+     * @param knn Number of nearest neighbors to find
+     * @param params Search parameters (checks value currently unused)
+     * @param stream CUDA stream for async execution (nullptr = thread-local stream)
+     *
+     * @return Number of queries processed
+     * @throws FLANNException if GPU not initialized or k unsupported
+     *
+     * @note Caller must synchronize on stream before reading results.
+     * @note If veclen % 4 != 0, queries are padded internally.
+     */
+    int knnSearchGPUDirect(
+        const ElementType* d_queries,
+        int* d_indices,
+        int* d_dists,
+        size_t num_queries,
+        size_t knn,
+        const SearchParams& params = SearchParams(),
+        cudaStream_t stream = nullptr) const
+    {
+        // 1. Validate GPU initialization
+        if (!gpu_initialized_) {
+            throw FLANNException("GPU index not initialized. Call buildCUDAKnnSearch() or prepareGPUIndex() first.");
+        }
+
+        // 2. Validate K value is supported
+        if (!isKValueSupportedForGPU(static_cast<int>(knn))) {
+            throw FLANNException(
+                "Unsupported k=" + std::to_string(knn) + " for CUDA hierarchical search.\n"
+                "Supported k values: 1, 2, 3, 4, 5, 8, 10, 12, 16, 20, 24, 32, 50, 64, 100, 128\n"
+                "Use a supported k value or fall back to CPU search.");
+        }
+
+        // 3. Handle zero queries
+        if (num_queries == 0) {
+            return 0;
+        }
+
+        // 4. Validate output pointers
+        if (d_indices == nullptr || d_dists == nullptr) {
+            throw FLANNException("Output pointers d_indices and d_dists cannot be null");
+        }
+
+        // 5. Thread safety - acquire shared lock for concurrent searches
+        std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
+
+        // 6. Stream selection
+        cudaStream_t exec_stream = (stream != nullptr) ? stream : this->getThreadStream();
+
+        // 7. Handle query padding if veclen % 4 != 0
+        int padded_bytes = 4 * ((this->veclen_ + 3) / 4);
+        const ElementType* kernel_queries = d_queries;
+        CUDABuffer<ElementType> padded_queries;
+
+        if ((size_t)padded_bytes != this->veclen_) {
+            // Allocate and pad queries on GPU
+            padded_queries = CUDABuffer<ElementType>(num_queries * padded_bytes);
+            if (!launch_pad_queries<ElementType>(
+                    d_queries,
+                    padded_queries.get(),
+                    num_queries,
+                    this->veclen_,
+                    padded_bytes,
+                    exec_stream)) {
+                throw FLANNException("Failed to launch GPU padding kernel");
+            }
+            kernel_queries = padded_queries.get();
+        }
+
+        // 8. Launch cooperative search kernel
+        bool success = launch_hierarchical_search_cooperative(
+            reinterpret_cast<const unsigned char*>(dataset_ptr_),
+            reinterpret_cast<const unsigned char*>(kernel_queries),
+            node_index_ptr_,
+            d_indices,   // Direct device output
+            d_dists,     // Direct device output
+            num_queries,
+            padded_bytes,
+            this->veclen_,
+            gpu_num_nodes_,
+            knn,
+            gpu_num_trees_,
+            this->branching_,
+            exec_stream
+        );
+
+        if (!success) {
+            throw FLANNException("Kernel launch failed for k=" + std::to_string(knn));
+        }
+
+        // 9. Check for kernel launch errors (non-blocking)
+        CUDA_CHECK_LAST();
+
+        // 10. No synchronization - caller is responsible for stream sync
+        return static_cast<int>(num_queries);
+    }
+
 protected:
     // ========================================================================
     // GPU Memory Management

@@ -1445,6 +1445,276 @@ TEST_F(KMeansCUDA_LoadTests, LoadPureCPUKMeansFormat)
 	remove(filename);
 }
 
+// ============================================================================
+// Device Pointer API Tests (knnSearchGPUDirect)
+// ============================================================================
+
+/**
+ * Test: Basic GPU Direct Search with Device Pointers
+ * Verifies knnSearchGPUDirect produces valid results when given device pointers
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestGPUDirect)
+{
+	// Build index and prepare GPU
+	flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+	index.buildIndex();
+	index.prepareGPUIndex();
+	EXPECT_TRUE(index.isGPUSearchReady());
+
+	size_t num_queries = query.rows;
+	size_t k = knn;
+
+	// Allocate device memory
+	float* d_queries = nullptr;
+	int* d_indices = nullptr;
+	float* d_dists = nullptr;
+
+	CUDA_CHECK(cudaMalloc(&d_queries, num_queries * query.cols * sizeof(float)));
+	CUDA_CHECK(cudaMalloc(&d_indices, num_queries * k * sizeof(int)));
+	CUDA_CHECK(cudaMalloc(&d_dists, num_queries * k * sizeof(float)));
+
+	// Upload queries to GPU
+	CUDA_CHECK(cudaMemcpy(d_queries, query[0], num_queries * query.cols * sizeof(float),
+		cudaMemcpyHostToDevice));
+
+	// Run GPU direct search
+	int result = index.knnSearchGPUDirect(d_queries, d_indices, d_dists, num_queries, k);
+	EXPECT_EQ(result, (int)num_queries);
+
+	// Synchronize to ensure results are ready
+	CUDA_CHECK(cudaDeviceSynchronize());
+
+	// Download results
+	std::vector<int> h_indices(num_queries * k);
+	std::vector<float> h_dists(num_queries * k);
+	CUDA_CHECK(cudaMemcpy(h_indices.data(), d_indices, num_queries * k * sizeof(int),
+		cudaMemcpyDeviceToHost));
+	CUDA_CHECK(cudaMemcpy(h_dists.data(), d_dists, num_queries * k * sizeof(float),
+		cudaMemcpyDeviceToHost));
+
+	// Verify results are valid
+	for (size_t i = 0; i < num_queries; ++i) {
+		for (size_t j = 0; j < k; ++j) {
+			EXPECT_GE(h_indices[i * k + j], 0) << "Invalid index at [" << i << "][" << j << "]";
+			EXPECT_LT(h_indices[i * k + j], (int)data.rows) << "Index out of bounds at [" << i << "][" << j << "]";
+			EXPECT_GE(h_dists[i * k + j], 0.0f) << "Negative distance at [" << i << "][" << j << "]";
+		}
+	}
+
+	// Compute precision against ground truth
+	size_t matches = 0;
+	for (size_t i = 0; i < num_queries; ++i) {
+		for (size_t j = 0; j < k; ++j) {
+			for (size_t m = 0; m < k; ++m) {
+				if ((size_t)h_indices[i * k + j] == gt_indices[i][m]) {
+					matches++;
+					break;
+				}
+			}
+		}
+	}
+	float precision = (float)matches / (num_queries * k);
+	printf("TestGPUDirect precision: %.2f%%\n", precision * 100);
+	EXPECT_GE(precision, 0.90f) << "Precision " << precision << " below 90% threshold";
+
+	// Cleanup
+	cudaFree(d_queries);
+	cudaFree(d_indices);
+	cudaFree(d_dists);
+}
+
+/**
+ * Test: GPU Direct Search produces identical results to knnSearchGPU
+ * Verifies equivalence between the two APIs
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestGPUDirectMatchesGPU)
+{
+	// Build index and prepare GPU
+	flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+	index.buildIndex();
+	index.prepareGPUIndex();
+
+	size_t num_queries = query.rows;
+	size_t k = knn;
+
+	// Run standard knnSearchGPU (via knnSearch which dispatches to GPU)
+	flann::Matrix<size_t> std_indices(new size_t[num_queries * k], num_queries, k);
+	flann::Matrix<float> std_dists(new float[num_queries * k], num_queries, k);
+	index.knnSearch(query, std_indices, std_dists, k, flann::SearchParams(128));
+
+	// Allocate device memory for direct search
+	float* d_queries = nullptr;
+	int* d_indices = nullptr;
+	float* d_dists = nullptr;
+
+	CUDA_CHECK(cudaMalloc(&d_queries, num_queries * query.cols * sizeof(float)));
+	CUDA_CHECK(cudaMalloc(&d_indices, num_queries * k * sizeof(int)));
+	CUDA_CHECK(cudaMalloc(&d_dists, num_queries * k * sizeof(float)));
+
+	// Upload queries
+	CUDA_CHECK(cudaMemcpy(d_queries, query[0], num_queries * query.cols * sizeof(float),
+		cudaMemcpyHostToDevice));
+
+	// Run GPU direct search
+	index.knnSearchGPUDirect(d_queries, d_indices, d_dists, num_queries, k);
+	CUDA_CHECK(cudaDeviceSynchronize());
+
+	// Download results
+	std::vector<int> direct_indices(num_queries * k);
+	std::vector<float> direct_dists(num_queries * k);
+	CUDA_CHECK(cudaMemcpy(direct_indices.data(), d_indices, num_queries * k * sizeof(int),
+		cudaMemcpyDeviceToHost));
+	CUDA_CHECK(cudaMemcpy(direct_dists.data(), d_dists, num_queries * k * sizeof(float),
+		cudaMemcpyDeviceToHost));
+
+	// Compare results - should be identical
+	size_t index_matches = 0;
+	size_t dist_matches = 0;
+	for (size_t i = 0; i < num_queries; ++i) {
+		for (size_t j = 0; j < k; ++j) {
+			if ((size_t)direct_indices[i * k + j] == std_indices[i][j]) {
+				index_matches++;
+			}
+			// Float comparison with small epsilon
+			if (fabs(direct_dists[i * k + j] - std_dists[i][j]) < 1e-5f) {
+				dist_matches++;
+			}
+		}
+	}
+
+	float index_match_rate = (float)index_matches / (num_queries * k);
+	float dist_match_rate = (float)dist_matches / (num_queries * k);
+	printf("TestGPUDirectMatchesGPU: index match=%.2f%%, dist match=%.2f%%\n",
+		index_match_rate * 100, dist_match_rate * 100);
+
+	// Results should be identical (100% match)
+	EXPECT_EQ(index_matches, num_queries * k) << "Indices differ between knnSearchGPU and knnSearchGPUDirect";
+	EXPECT_EQ(dist_matches, num_queries * k) << "Distances differ between knnSearchGPU and knnSearchGPUDirect";
+
+	// Cleanup
+	delete[] std_indices.ptr();
+	delete[] std_dists.ptr();
+	cudaFree(d_queries);
+	cudaFree(d_indices);
+	cudaFree(d_dists);
+}
+
+/**
+ * Test: GPU Direct Search with custom stream
+ * Verifies that providing a custom CUDA stream works correctly
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestGPUDirectWithStream)
+{
+	// Build index and prepare GPU
+	flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+	index.buildIndex();
+	index.prepareGPUIndex();
+
+	size_t num_queries = query.rows;
+	size_t k = knn;
+
+	// Create custom stream
+	cudaStream_t stream;
+	CUDA_CHECK(cudaStreamCreate(&stream));
+
+	// Allocate device memory
+	float* d_queries = nullptr;
+	int* d_indices = nullptr;
+	float* d_dists = nullptr;
+
+	CUDA_CHECK(cudaMalloc(&d_queries, num_queries * query.cols * sizeof(float)));
+	CUDA_CHECK(cudaMalloc(&d_indices, num_queries * k * sizeof(int)));
+	CUDA_CHECK(cudaMalloc(&d_dists, num_queries * k * sizeof(float)));
+
+	// Async upload on custom stream
+	CUDA_CHECK(cudaMemcpyAsync(d_queries, query[0], num_queries * query.cols * sizeof(float),
+		cudaMemcpyHostToDevice, stream));
+
+	// Run GPU direct search with custom stream
+	int result = index.knnSearchGPUDirect(d_queries, d_indices, d_dists, num_queries, k,
+		flann::SearchParams(128), stream);
+	EXPECT_EQ(result, (int)num_queries);
+
+	// Sync stream
+	CUDA_CHECK(cudaStreamSynchronize(stream));
+
+	// Download and verify
+	std::vector<int> h_indices(num_queries * k);
+	CUDA_CHECK(cudaMemcpy(h_indices.data(), d_indices, num_queries * k * sizeof(int),
+		cudaMemcpyDeviceToHost));
+
+	// Verify results are valid
+	for (size_t i = 0; i < num_queries; ++i) {
+		for (size_t j = 0; j < k; ++j) {
+			EXPECT_GE(h_indices[i * k + j], 0);
+			EXPECT_LT(h_indices[i * k + j], (int)data.rows);
+		}
+	}
+
+	// Cleanup
+	cudaStreamDestroy(stream);
+	cudaFree(d_queries);
+	cudaFree(d_indices);
+	cudaFree(d_dists);
+}
+
+/**
+ * Test: GPU Direct Search error handling
+ * Verifies proper exceptions for invalid parameters
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestGPUDirectErrorHandling)
+{
+	flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+	index.buildIndex();
+	index.prepareGPUIndex();
+
+	float* d_queries = nullptr;
+	int* d_indices = nullptr;
+	float* d_dists = nullptr;
+	CUDA_CHECK(cudaMalloc(&d_queries, 1000));
+	CUDA_CHECK(cudaMalloc(&d_indices, 1000));
+	CUDA_CHECK(cudaMalloc(&d_dists, 1000));
+
+	// Test null output pointer
+	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, (int*)nullptr, d_dists, 10, 5), FLANNException);
+	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, d_indices, (float*)nullptr, 10, 5), FLANNException);
+
+	// Test unsupported k value (3 is not supported for KMeans CUDA)
+	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, d_indices, d_dists, 10, 3), FLANNException);
+	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, d_indices, d_dists, 10, 200), FLANNException);
+
+	// Test zero queries (should succeed, return 0)
+	int result = index.knnSearchGPUDirect(d_queries, d_indices, d_dists, 0, 5);
+	EXPECT_EQ(result, 0);
+
+	cudaFree(d_queries);
+	cudaFree(d_indices);
+	cudaFree(d_dists);
+}
+
+/**
+ * Test: GPU Direct Search before GPU initialization throws
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestGPUDirectBeforeInit)
+{
+	flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+	index.buildIndex();
+	// Note: NOT calling prepareGPUIndex()
+
+	float* d_queries = nullptr;
+	int* d_indices = nullptr;
+	float* d_dists = nullptr;
+	CUDA_CHECK(cudaMalloc(&d_queries, 1000));
+	CUDA_CHECK(cudaMalloc(&d_indices, 1000));
+	CUDA_CHECK(cudaMalloc(&d_dists, 1000));
+
+	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, d_indices, d_dists, 10, 5), FLANNException);
+
+	cudaFree(d_queries);
+	cudaFree(d_indices);
+	cudaFree(d_dists);
+}
+
 int main(int argc, char** argv)
 {
     testing::InitGoogleTest(&argc, argv);

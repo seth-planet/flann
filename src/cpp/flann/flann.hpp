@@ -585,6 +585,66 @@ public:
 
         throw FLANNException("convertToGPUFormat() only supported for CUDA index types");
     }
+
+    /**
+     * @brief GPU-direct k-NN search with device pointers (zero-copy)
+     *
+     * Performs k-nearest neighbor search using device-resident data,
+     * eliminating CPU<->GPU memory transfers for queries and results.
+     * Ideal for GPU-resident pipelines where data never leaves device memory.
+     *
+     * For HierarchicalCUDAIndex (unsigned char/Hamming):
+     *   d_dists is int* (Hamming distance as popcount)
+     *
+     * For KMeansCUDAIndex (float/L2):
+     *   d_dists is float* (L2 squared distance)
+     *
+     * @param d_queries Device pointer to query vectors [num_queries x veclen]
+     * @param d_indices Device pointer for output indices [num_queries x knn]
+     * @param d_dists   Device pointer for output distances [num_queries x knn]
+     * @param num_queries Number of query vectors
+     * @param knn Number of nearest neighbors to find
+     * @param params Search parameters
+     * @param stream CUDA stream for async execution (nullptr = default stream)
+     *
+     * @return Number of queries processed
+     * @throws FLANNException if not a CUDA index or GPU not initialized
+     *
+     * @note Caller must synchronize on stream before reading results.
+     */
+    template<typename DistT>
+    int knnSearchGPUDirect(
+        const ElementType* d_queries,
+        int* d_indices,
+        DistT* d_dists,
+        size_t num_queries,
+        size_t knn,
+        const SearchParams& params = SearchParams(),
+        cudaStream_t stream = nullptr) const
+    {
+        flann_algorithm_t index_type = nnIndex_->getType();
+
+        if (index_type == FLANN_INDEX_KMEANS_CUDA) {
+            static_assert(std::is_same<DistT, float>::value || std::is_same<DistT, int>::value,
+                "KMeansCUDAIndex requires float* for d_dists");
+            return static_cast<cuda::KMeansCUDAIndex<Distance>*>(nnIndex_)
+                ->knnSearchGPUDirect(d_queries, d_indices,
+                    reinterpret_cast<float*>(d_dists),
+                    num_queries, knn, params, stream);
+        }
+
+        if (index_type == FLANN_INDEX_HIERARCHICAL_CUDA) {
+            static_assert(std::is_same<DistT, int>::value || std::is_same<DistT, float>::value,
+                "HierarchicalCUDAIndex requires int* for d_dists");
+            return static_cast<cuda::HierarchicalCUDAIndex<Distance>*>(nnIndex_)
+                ->knnSearchGPUDirect(d_queries, d_indices,
+                    reinterpret_cast<int*>(d_dists),
+                    num_queries, knn, params, stream);
+        }
+
+        throw FLANNException("knnSearchGPUDirect() only supported for CUDA index types "
+            "(FLANN_INDEX_KMEANS_CUDA, FLANN_INDEX_HIERARCHICAL_CUDA)");
+    }
 #endif /* FLANN_USE_CUDA */
 
 private:

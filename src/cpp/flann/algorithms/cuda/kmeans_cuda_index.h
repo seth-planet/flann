@@ -603,6 +603,160 @@ public:
     }
 
     /**
+     * @brief GPU-direct k-NN search with device pointers (zero-copy)
+     *
+     * Performs k-nearest neighbor search using device-resident data,
+     * eliminating CPU<->GPU memory transfers for queries and results.
+     * Ideal for GPU-resident pipelines where data never leaves device memory.
+     *
+     * @param d_queries Device pointer to query vectors [num_queries x veclen]
+     *                  Must be contiguous row-major layout.
+     * @param d_indices Device pointer for output indices [num_queries x knn]
+     *                  Will contain point indices as int.
+     * @param d_dists   Device pointer for output distances [num_queries x knn]
+     *                  L2 squared distances as float.
+     * @param num_queries Number of query vectors
+     * @param knn Number of nearest neighbors to find
+     * @param params Search parameters (checks value used for heap size)
+     * @param stream CUDA stream for async execution (nullptr = thread-local stream)
+     *
+     * @return Number of queries processed
+     * @throws FLANNException if GPU not initialized or k unsupported
+     *
+     * @note Caller must synchronize on stream before reading results.
+     * @note If veclen % 4 != 0, queries are padded internally.
+     *
+     * Example:
+     *   // Data already on GPU
+     *   float* d_queries;  // [N x 128] descriptors on GPU
+     *   int* d_indices;    // Output [N x k]
+     *   float* d_dists;    // Output [N x k]
+     *
+     *   index.knnSearchGPUDirect(d_queries, d_indices, d_dists, N, k, params, stream);
+     *   cudaStreamSynchronize(stream);  // Caller syncs
+     */
+    int knnSearchGPUDirect(
+        const ElementType* d_queries,
+        int* d_indices,
+        float* d_dists,
+        size_t num_queries,
+        size_t knn,
+        const SearchParams& params = SearchParams(),
+        cudaStream_t stream = nullptr) const
+    {
+        // 1. Validate GPU initialization
+        if (!gpu_initialized_) {
+            throw FLANNException("GPU index not initialized. Call buildCUDAKnnSearch() or prepareGPUIndex() first.");
+        }
+
+        // 2. Validate K value is supported
+        if (!isKValueSupportedForGPU(static_cast<int>(knn))) {
+            throw FLANNException(
+                "Unsupported k=" + std::to_string(knn) + " for CUDA K-Means search.\n"
+                "Supported k values: 1, 2, 4, 5, 7, 8, 10, 16, 20, 32, 50, 64, 100\n"
+                "Use a supported k value or fall back to CPU search.");
+        }
+
+        // 3. Handle zero queries
+        if (num_queries == 0) {
+            return 0;
+        }
+
+        // 4. Validate output pointers
+        if (d_indices == nullptr || d_dists == nullptr) {
+            throw FLANNException("Output pointers d_indices and d_dists cannot be null");
+        }
+
+        // 5. Thread safety - acquire shared lock for concurrent searches
+        std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
+
+        // 6. Stream selection
+        cudaStream_t exec_stream = (stream != nullptr) ? stream : this->getThreadStream();
+
+        // 7. Handle query padding if needed
+        const ElementType* kernel_queries = d_queries;
+        CUDABuffer<ElementType> padded_queries;
+
+        if (padded_veclen_ != this->veclen_) {
+            // Allocate and pad queries on GPU
+            padded_queries = CUDABuffer<ElementType>(num_queries * padded_veclen_);
+            if (!launch_pad_queries<ElementType>(
+                    d_queries,
+                    padded_queries.get(),
+                    num_queries,
+                    this->veclen_,
+                    padded_veclen_,
+                    exec_stream)) {
+                throw FLANNException("Failed to launch GPU padding kernel");
+            }
+            kernel_queries = padded_queries.get();
+        }
+
+        // 8. Calculate heap size based on parameters
+        int max_checks = params.checks;
+        if (max_checks <= 0 || max_checks == FLANN_CHECKS_UNLIMITED) {
+            max_checks = 256;
+        }
+        int heap_size = calculateHeapSize(knn, max_checks);
+        int loc_size = getCUDALocSize(0);
+
+        // 9. Validate cooperative kernel can be used
+        bool heap_ok = (heap_size <= loc_size);
+        bool branch_ok = (this->branching_ == 32 || this->branching_ == 64);
+        if (!heap_ok || !branch_ok) {
+            throw FLANNException(
+                "knnSearchGPUDirect requires branching=32 or 64 and heap_size <= loc_size. "
+                "Current: branching=" + std::to_string(this->branching_) +
+                ", heap_size=" + std::to_string(heap_size) +
+                ", loc_size=" + std::to_string(loc_size));
+        }
+
+        // 10. Launch kernel with K dispatch
+        bool success = false;
+        #define SEARCH_DISPATCH(K) \
+            success = launch_kmeans_search_cooperative<K>( \
+                (const float*)dataset_ptr_, \
+                (const float*)kernel_queries, \
+                node_index_ptr_, \
+                (const float*)tree_pivots_ptr_, \
+                node_variance_ptr_, \
+                d_indices, \
+                d_dists, \
+                num_queries, padded_veclen_, num_nodes_, \
+                heap_size, loc_size, this->branching_, this->cb_index_, \
+                exec_stream)
+
+        if (knn == 1) { SEARCH_DISPATCH(1); }
+        else if (knn == 2) { SEARCH_DISPATCH(2); }
+        else if (knn == 4) { SEARCH_DISPATCH(4); }
+        else if (knn == 5) { SEARCH_DISPATCH(5); }
+        else if (knn == 7) { SEARCH_DISPATCH(7); }
+        else if (knn == 8) { SEARCH_DISPATCH(8); }
+        else if (knn == 10) { SEARCH_DISPATCH(10); }
+        else if (knn == 16) { SEARCH_DISPATCH(16); }
+        else if (knn == 20) { SEARCH_DISPATCH(20); }
+        else if (knn == 32) { SEARCH_DISPATCH(32); }
+        else if (knn == 50) { SEARCH_DISPATCH(50); }
+        else if (knn == 64) { SEARCH_DISPATCH(64); }
+        else if (knn == 100) { SEARCH_DISPATCH(100); }
+        else {
+            throw FLANNException("Unsupported k=" + std::to_string(knn) + " for GPU direct search");
+        }
+
+        #undef SEARCH_DISPATCH
+
+        if (!success) {
+            throw FLANNException("Kernel launch failed for k=" + std::to_string(knn));
+        }
+
+        // 11. Check for kernel launch errors (non-blocking)
+        CUDA_CHECK_LAST();
+
+        // 12. No synchronization - caller is responsible for stream sync
+        return static_cast<int>(num_queries);
+    }
+
+    /**
      * @brief GPU-accelerated k-NN batch search
      *
      * Performs k-nearest neighbor search using GPU acceleration.
