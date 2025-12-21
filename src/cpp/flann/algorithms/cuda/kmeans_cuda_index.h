@@ -39,7 +39,6 @@
 #include <cuda_runtime.h>
 #include <mutex>         // For std::unique_lock
 #include <shared_mutex>  // For std::shared_mutex, std::shared_lock
-#include <bitset>        // For warmup K tracking
 
 #include "flann/algorithms/kmeans_index.h"
 #include "flann/algorithms/cuda/cuda_utils.h"
@@ -423,12 +422,8 @@ public:
                 "Use a supported k value or fall back to CPU search.");
         }
 
-        // Prepare GPU (upload tree/dataset) - this is now K-independent
+        // Prepare GPU (upload tree/dataset) - this is K-independent
         prepareGPUIndex();
-
-        // Warmup for the specific K value (triggers JIT compilation)
-        int checks = params.checks > 0 ? params.checks : 256;
-        ensureWarmupForK(knn, checks);
     }
 
     /**
@@ -470,7 +465,7 @@ public:
      * @brief Prepare GPU index for search (K-independent)
      *
      * Uploads tree and dataset to GPU without requiring a K value.
-     * Warmup is deferred to first search or explicit warmupForK() call.
+     * GPU is ready for search immediately after this call.
      *
      * This is the preferred way to prepare GPU indices when K is not known
      * at conversion time, or when multiple K values will be used.
@@ -488,27 +483,6 @@ public:
             uploadToGPUInternal();
         }
         gpu_search_ready_ = true;
-    }
-
-    /**
-     * @brief Warm up kernel for a specific K value
-     *
-     * Pre-warms the JIT compiler for a specific K value, avoiding ~40ms
-     * overhead on first search with that K.
-     *
-     * @param k Number of nearest neighbors
-     * @param checks Search checks parameter (affects warmup behavior)
-     * @throws FLANNException if prepareGPUIndex() not called or K unsupported
-     */
-    void warmupForK(int k, int checks = 256)
-    {
-        if (!gpu_search_ready_) {
-            throw FLANNException("Call prepareGPUIndex() first.");
-        }
-        if (!isKValueSupportedForGPU(k)) {
-            throw FLANNException("Unsupported k=" + std::to_string(k) + " for GPU search.");
-        }
-        ensureWarmupForK(k, checks);
     }
 
     /**
@@ -626,68 +600,6 @@ public:
                     std::to_string(header.h.index_type));
             }
         }
-    }
-
-    /**
-     * @brief Warmup kernel to trigger JIT compilation
-     *
-     * Runs a single-query search to force kernel compilation.
-     * The result is discarded - this is purely to amortize JIT overhead.
-     */
-    void warmupKernel(int knn, const SearchParams& params) const
-    {
-        // Create a dummy single-query search to trigger JIT compilation
-        if (this->size_ == 0 || this->veclen_ == 0) return;
-
-        // Use zero-initialized query (values don't matter for JIT warmup)
-        // This avoids dependency on points_ which may not be available in gpu_only mode
-        std::vector<ElementType> warmup_query(padded_veclen_, 0);
-
-        // Allocate minimal buffers
-        CUDABuffer<ElementType> queries_gpu(padded_veclen_);
-        queries_gpu.upload(warmup_query.data(), padded_veclen_);
-
-        CUDABuffer<int> indices_gpu(knn);
-        CUDABuffer<float> dists_gpu(knn);
-
-        // Calculate parameters
-        int max_checks = params.checks > 0 ? params.checks : 256;
-        int heap_size = calculateHeapSize(knn, max_checks);
-        int loc_size = getCUDALocSize(0);
-
-        // Launch kernel (triggers JIT compilation for the specific k value)
-        bool use_cooperative = (heap_size <= loc_size && (this->branching_ == 32 || this->branching_ == 64));
-        if (use_cooperative) {
-            // Cooperative kernel warmup - dispatch based on actual knn value
-            // Use the same dispatch as knnSearchGPUImpl to ensure JIT for correct template
-            // Dispatch warmup based on k value (triggers JIT for correct template)
-            #define WARMUP_DISPATCH(K) \
-                launch_kmeans_search_cooperative<K>( \
-                    (const float*)dataset_ptr_, (const float*)queries_gpu.get(), \
-                    node_index_ptr_, (const float*)tree_pivots_ptr_, \
-                    node_variance_ptr_, indices_gpu.get(), dists_gpu.get(), \
-                    1, padded_veclen_, num_nodes_, heap_size, loc_size, \
-                    this->branching_, this->cb_index_)
-
-            if (knn == 1) { WARMUP_DISPATCH(1); }
-            else if (knn == 2) { WARMUP_DISPATCH(2); }
-            else if (knn == 4) { WARMUP_DISPATCH(4); }
-            else if (knn == 5) { WARMUP_DISPATCH(5); }
-            else if (knn == 7) { WARMUP_DISPATCH(7); }
-            else if (knn == 8) { WARMUP_DISPATCH(8); }
-            else if (knn == 10) { WARMUP_DISPATCH(10); }
-            else if (knn == 16) { WARMUP_DISPATCH(16); }
-            else if (knn == 20) { WARMUP_DISPATCH(20); }
-            else if (knn == 32) { WARMUP_DISPATCH(32); }
-            else if (knn == 50) { WARMUP_DISPATCH(50); }
-            else if (knn == 64) { WARMUP_DISPATCH(64); }
-            else if (knn == 100) { WARMUP_DISPATCH(100); }
-
-            #undef WARMUP_DISPATCH
-        }
-
-        // Sync to ensure kernel completes (and JIT finishes)
-        cudaDeviceSynchronize();
     }
 
     /**
@@ -1096,10 +1008,6 @@ protected:
         if (max_checks <= 0 || max_checks == FLANN_CHECKS_UNLIMITED) {
             max_checks = 256;  // Default
         }
-
-        // Lazy warmup: ensure kernel is JIT-compiled for this K value
-        // First search with a new K value pays ~40ms overhead
-        ensureWarmupForK(knn, max_checks);
 
         // Require contiguous queries (O(1) stride check instead of O(n) pointer loop)
         if (queries.stride != this->veclen_ * sizeof(ElementType)) {
@@ -1680,38 +1588,11 @@ protected:
         return std::max(avgNodes, clKnn);
     }
 
-    /**
-     * @brief Ensure warmup is done for a specific K value (lazy JIT)
-     *
-     * Thread-safe double-checked locking pattern.
-     * Fast path: if already warmed up, returns immediately without lock.
-     * Slow path: acquires warmup_mutex_ and warms up if still needed.
-     *
-     * @param k Number of nearest neighbors
-     * @param checks Search checks parameter for warmup
-     */
-    void ensureWarmupForK(int k, int checks = 256) const
-    {
-        // Fast path: no lock if already warmed up
-        if (warmed_up_k_values_[k]) return;
-
-        // Slow path: acquire lock and double-check
-        std::lock_guard<std::mutex> lock(warmup_mutex_);
-        if (!warmed_up_k_values_[k]) {
-            warmupKernel(k, SearchParams(checks));
-            warmed_up_k_values_.set(k);
-        }
-    }
-
 private:
     // GPU state (mutable = implementation detail, not logical state)
     mutable bool gpu_initialized_;
     mutable bool gpu_search_ready_;
     bool gpu_only_mode_;  // True if loaded with gpu_only=true (points_ not available)
-
-    // Warmup tracking - lazy JIT compilation per K value
-    mutable std::mutex warmup_mutex_;
-    mutable std::bitset<129> warmed_up_k_values_;  // Max K=128 (index 0-128)
 
     // Note: Thread safety is now handled by rw_lock_ in base class CUDAIndex
     // (std::shared_mutex for reader-writer locking)

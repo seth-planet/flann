@@ -249,7 +249,7 @@ flann::Index<flann::L2<float>> index(empty_data, flann::SavedIndexParams("model.
 
 // CRITICAL: Always call buildCUDAKnnSearch() after loading
 // - For CPU format: uploads tree to GPU (~200-500ms)
-// - For GPU format: just compiles JIT kernels (~50-100ms)
+// - For GPU format: minimal overhead (CUDA kernels are pre-compiled)
 index.buildCUDAKnnSearch(k, flann::SearchParams(checks));
 
 // Now search works

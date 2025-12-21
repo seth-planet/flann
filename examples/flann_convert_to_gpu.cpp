@@ -141,15 +141,7 @@ bool convertIndex(const char* input, const char* output,
     double gpu_ms = std::chrono::duration<double, std::milli>(gpu_end - gpu_start).count();
     if (verbose) std::cout << "  GPU prepare time: " << gpu_ms << " ms\n";
 
-    // Optional: pre-warm JIT for specific K value
-    if (warmup_k > 0) {
-        if (verbose) std::cout << "  Pre-warming JIT for k=" << warmup_k << "...\n";
-        auto warmup_start = std::chrono::high_resolution_clock::now();
-        index.warmupForK(warmup_k);
-        auto warmup_end = std::chrono::high_resolution_clock::now();
-        double warmup_ms = std::chrono::duration<double, std::milli>(warmup_end - warmup_start).count();
-        if (verbose) std::cout << "  Warmup time: " << warmup_ms << " ms\n";
-    }
+    (void)warmup_k;  // Warmup removed - CUDA kernels are pre-compiled at build time
 
     // Convert to GPU-only format (discards CPU tree)
     if (verbose) std::cout << "Converting to GPU-only format...\n";
@@ -179,9 +171,8 @@ bool convertIndex(const char* input, const char* output,
         flann::Matrix<ElementType> dataset2;
         flann::Index<Distance> loaded(dataset2, flann::SavedIndexParams(output));
 
-        // Use new K-independent prepare + explicit warmup for verification K
+        // Prepare GPU for search
         loaded.prepareGPUIndex();
-        loaded.warmupForK(verify_k);
 
         // Run search after conversion
         // Use the original queries from before conversion (GPU-only mode doesn't support getPoint)

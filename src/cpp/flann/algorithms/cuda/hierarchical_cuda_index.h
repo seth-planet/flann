@@ -39,7 +39,6 @@
 #include <cuda_runtime.h>
 #include <mutex>         // For std::unique_lock
 #include <shared_mutex>  // For std::shared_mutex, std::shared_lock
-#include <bitset>        // For warmup K tracking
 
 #include "flann/algorithms/hierarchical_clustering_index.h"
 #include "flann/algorithms/cuda/cuda_utils.h"
@@ -292,11 +291,8 @@ public:
                 "Use a supported k value or fall back to CPU search.");
         }
 
-        // Prepare GPU (upload tree/dataset) - this is now K-independent
+        // Prepare GPU (upload tree/dataset) - this is K-independent
         prepareGPUIndex();
-
-        // Warmup for the specific K value (triggers JIT compilation)
-        ensureWarmupForK(knn);
     }
 
     /**
@@ -336,7 +332,7 @@ public:
      * @brief Prepare GPU index for search (K-independent)
      *
      * Uploads tree and dataset to GPU without requiring a K value.
-     * Warmup is deferred to first search or explicit warmupForK() call.
+     * GPU is ready for search immediately after this call.
      *
      * This is the preferred way to prepare GPU indices when K is not known
      * at conversion time, or when multiple K values will be used.
@@ -366,28 +362,6 @@ public:
             uploadToGPUInternal();
         }
         gpu_search_ready_ = true;
-    }
-
-    /**
-     * @brief Warm up kernel for a specific K value
-     *
-     * Pre-warms the JIT compiler for a specific K value, avoiding ~340-450ms
-     * overhead on first search with that K.
-     *
-     * @param k Number of nearest neighbors
-     * @param checks Search checks parameter (unused for hierarchical)
-     * @throws FLANNException if prepareGPUIndex() not called or K unsupported
-     */
-    void warmupForK(int k, int checks = 256)
-    {
-        (void)checks;  // Unused for hierarchical
-        if (!gpu_search_ready_) {
-            throw FLANNException("Call prepareGPUIndex() first.");
-        }
-        if (!isKValueSupportedForGPU(k)) {
-            throw FLANNException("Unsupported k=" + std::to_string(k) + " for GPU search.");
-        }
-        ensureWarmupForK(k);
     }
 
     /**
@@ -528,58 +502,6 @@ public:
                     std::to_string(header.h.index_type));
             }
         }
-    }
-
-    /**
-     * @brief Warmup kernel to trigger JIT compilation
-     *
-     * Runs a single-query search to force kernel compilation.
-     * The result is discarded - this is purely to amortize JIT overhead.
-     *
-     * @param knn Number of nearest neighbors (determines kernel template)
-     * @param params Search parameters (unused, for API consistency)
-     */
-    void warmupKernel(int knn, const SearchParams& params = SearchParams()) const
-    {
-        (void)params;  // Unused for hierarchical, but kept for API consistency
-
-        // Create a dummy single-query search to trigger JIT compilation
-        if (this->size_ == 0 || this->veclen_ == 0) return;
-
-        int padded_bytes = 4 * ((this->veclen_ + 3) / 4);
-
-        // Allocate minimal warmup buffers (1 query)
-        CUDABuffer<ElementType> warmup_queries(padded_bytes);
-        CUDABuffer<int> warmup_indices(knn);
-        CUDABuffer<int> warmup_dists(knn);
-
-        // Upload dummy query (zeros)
-        std::vector<ElementType> dummy_query(padded_bytes, 0);
-        warmup_queries.upload(dummy_query.data(), padded_bytes);
-
-        // Launch kernel with 1 query to trigger JIT compilation
-        bool success = launch_hierarchical_search_cooperative(
-            reinterpret_cast<const unsigned char*>(dataset_ptr_),
-            reinterpret_cast<const unsigned char*>(warmup_queries.get()),
-            node_index_ptr_,  // Interleaved [pivot, child_ptr] array
-            warmup_indices.get(),
-            warmup_dists.get(),
-            1,                     // 1 query for warmup
-            padded_bytes,
-            this->veclen_,
-            gpu_num_nodes_,
-            knn,
-            gpu_num_trees_,
-            this->branching_
-        );
-        if (!success) {
-            throw FLANNException(
-                "Unsupported k=" + std::to_string(knn) + " for CUDA hierarchical search.\n"
-                "Supported k values: 1, 2, 3, 4, 5, 8, 10, 12, 16, 20, 24, 32, 50, 64, 100, 128\n"
-                "Use a supported k value or fall back to CPU search.");
-        }
-        // Wait for JIT compilation to complete
-        cudaDeviceSynchronize();
     }
 
     /**
@@ -1279,10 +1201,7 @@ protected:
         if (max_checks <= 0 || max_checks == FLANN_CHECKS_UNLIMITED) {
             max_checks = 256;  // Default
         }
-
-        // Lazy warmup: ensure kernel is JIT-compiled for this K value
-        // First search with a new K value pays ~340-450ms overhead
-        ensureWarmupForK(static_cast<int>(knn));
+        (void)max_checks;  // Currently unused, reserved for future optimization
 
         // CRITICAL FIX: Pad to multiple of 4 to match OpenCL exactly
         // OpenCL uses: n_veclen = 4*((veclen+3)/4)
@@ -1381,31 +1300,6 @@ protected:
         // gpu_queries, gpu_indices, gpu_dists freed automatically here
     }
 
-    /**
-     * @brief Ensure warmup is done for a specific K value (lazy JIT)
-     *
-     * Thread-safe double-checked locking pattern.
-     * Fast path: if already warmed up, returns immediately without lock.
-     * Slow path: acquires warmup_mutex_ and warms up if still needed.
-     *
-     * @param k Number of nearest neighbors
-     * @param checks Search checks parameter for warmup (unused in hierarchical)
-     */
-    void ensureWarmupForK(int k, int checks = 256) const
-    {
-        (void)checks;  // Unused for hierarchical warmup
-
-        // Fast path: no lock if already warmed up
-        if (warmed_up_k_values_[k]) return;
-
-        // Slow path: acquire lock and double-check
-        std::lock_guard<std::mutex> lock(warmup_mutex_);
-        if (!warmed_up_k_values_[k]) {
-            warmupKernel(k, SearchParams());
-            warmed_up_k_values_.set(k);
-        }
-    }
-
 private:
     // ========================================================================
     // GPU State
@@ -1414,10 +1308,6 @@ private:
     bool gpu_initialized_;      ///< True if GPU buffers allocated and uploaded
     bool gpu_search_ready_;     ///< True if buildCUDAKnnSearch() was called
     bool gpu_only_mode_;        ///< True if loaded with gpu_only=true (points_ not available)
-
-    // Warmup tracking - lazy JIT compilation per K value
-    mutable std::mutex warmup_mutex_;
-    mutable std::bitset<129> warmed_up_k_values_;  // Max K=128 (index 0-128)
 
     // Note: Thread safety is now handled by rw_lock_ in base class CUDAIndex
     // (std::shared_mutex for reader-writer locking)

@@ -471,7 +471,6 @@ public:
      * @brief Prepare GPU index for search (K-independent)
      *
      * Uploads tree and dataset to GPU without requiring a K value.
-     * Warmup is deferred to first search or explicit warmupForK() call.
      *
      * @throws FLANNException if index not built or unsupported index type
      */
@@ -513,33 +512,6 @@ public:
 
         throw FLANNException(
             "prepareGPUIndex() only supports K-Means and Hierarchical index types.");
-    }
-
-    /**
-     * @brief Warm up kernel for a specific K value
-     *
-     * Pre-warms the JIT compiler for a specific K value.
-     *
-     * @param k Number of nearest neighbors
-     * @param checks Search checks parameter (default 256)
-     * @throws FLANNException if prepareGPUIndex() not called or unsupported K/index type
-     */
-    void warmupForK(int k, int checks = 256)
-    {
-        flann_algorithm_t index_type = nnIndex_->getType();
-
-        if (index_type == FLANN_INDEX_KMEANS_CUDA) {
-            return static_cast<cuda::KMeansCUDAIndex<Distance>*>(
-                nnIndex_)->warmupForK(k, checks);
-        }
-
-        if (index_type == FLANN_INDEX_HIERARCHICAL_CUDA) {
-            return static_cast<cuda::HierarchicalCUDAIndex<Distance>*>(
-                nnIndex_)->warmupForK(k, checks);
-        }
-
-        throw FLANNException(
-            "warmupForK() only supports CUDA index types. Call prepareGPUIndex() first.");
     }
 
     /**
