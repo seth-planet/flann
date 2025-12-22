@@ -749,7 +749,10 @@ public:
         // 9. Check for kernel launch errors (non-blocking)
         CUDA_CHECK_LAST();
 
-        // 10. No synchronization - caller is responsible for stream sync
+        // 10. Synchronize to prevent race conditions when index is destroyed
+        // or when multiple indices are used sequentially
+        CUDA_CHECK(cudaStreamSynchronize(exec_stream));
+
         return static_cast<int>(num_queries);
     }
 
