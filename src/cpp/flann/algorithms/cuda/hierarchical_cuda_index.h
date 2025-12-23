@@ -37,6 +37,7 @@
 #include <cstdint>  // For SIZE_MAX
 #include <memory>   // For std::unique_ptr
 #include <cuda_runtime.h>
+#include <atomic>        // For std::atomic (stream-ordered deallocation)
 #include <mutex>         // For std::unique_lock
 #include <shared_mutex>  // For std::shared_mutex, std::shared_lock
 
@@ -228,9 +229,19 @@ public:
 
     /**
      * @brief Destructor
+     *
+     * Uses stream-ordered deallocation (CUDA 11.2+) if async GPU operations
+     * were performed. This ensures GPU memory is only freed AFTER all pending
+     * kernel operations complete, preventing race conditions.
      */
     ~HierarchicalCUDAIndex()
     {
+        cudaStream_t stream = last_search_stream_.load(std::memory_order_acquire);
+        if (stream) {
+            // Set deallocation stream for workspace buffer - destructor will use cudaFreeAsync
+            workspace_gpu_.setDeallocationStream(stream);
+        }
+        // CUDABuffer destructor handles the actual deallocation
     }
 
     /**
@@ -565,6 +576,12 @@ public:
         std::swap(workspace_offset_node_index_, other.workspace_offset_node_index_);
         std::swap(dataset_ptr_, other.dataset_ptr_);
         std::swap(node_index_ptr_, other.node_index_ptr_);
+
+        // Swap stream tracking (atomic requires exchange)
+        cudaStream_t this_stream = last_search_stream_.exchange(
+            other.last_search_stream_.load(std::memory_order_acquire),
+            std::memory_order_acq_rel);
+        other.last_search_stream_.store(this_stream, std::memory_order_release);
     }
 
     // ========================================================================
@@ -702,8 +719,9 @@ public:
         // 5. Thread safety - acquire shared lock for concurrent searches
         std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
 
-        // 6. Use caller-provided stream
+        // 6. Use caller-provided stream and track for stream-ordered deallocation
         cudaStream_t exec_stream = stream;
+        last_search_stream_.store(stream, std::memory_order_release);
 
         // 7. Handle query padding if veclen % 4 != 0
         int padded_bytes = 4 * ((this->veclen_ + 3) / 4);
@@ -713,6 +731,8 @@ public:
         if ((size_t)padded_bytes != this->veclen_) {
             // Allocate and pad queries on GPU
             padded_queries = CUDABuffer<ElementType>(num_queries * padded_bytes);
+            // Set stream for ordered deallocation - ensures memory freed after kernel completes
+            padded_queries.setDeallocationStream(exec_stream);
             if (!launch_pad_queries<ElementType>(
                     d_queries,
                     padded_queries.get(),
@@ -762,10 +782,17 @@ protected:
      * @brief Free all GPU memory buffers
      *
      * Called when tree structure changes (add/remove points) or on destruction.
+     * Uses stream-ordered deallocation if async GPU operations were performed.
      */
     void freeGPUMemory()
     {
-        // Free workspace buffer (single deallocation)
+        // Set stream for ordered deallocation if we have pending async operations
+        cudaStream_t stream = last_search_stream_.load(std::memory_order_acquire);
+        if (stream) {
+            workspace_gpu_.setDeallocationStream(stream);
+        }
+
+        // Free workspace buffer (uses cudaFreeAsync if stream is set)
         workspace_gpu_ = CUDABuffer<unsigned char>();
 
         // Reset workspace offset
@@ -780,6 +807,9 @@ protected:
         gpu_search_ready_ = false;
         gpu_num_nodes_ = 0;
         gpu_num_trees_ = 0;
+
+        // Reset stream tracking
+        last_search_stream_.store(nullptr, std::memory_order_release);
     }
 
     /**
@@ -1437,6 +1467,11 @@ private:
     // Non-owning pointers into workspace (nullptr if workspace not allocated)
     mutable ElementType* dataset_ptr_;
     mutable int* node_index_ptr_;
+
+    // Stream tracking for stream-ordered deallocation (CUDA 11.2+)
+    // Tracks the most recent stream used in knnSearchGPUDirect() so the destructor
+    // can use cudaFreeAsync to safely free GPU memory after async operations complete.
+    mutable std::atomic<cudaStream_t> last_search_stream_{nullptr};
 
 };
 
