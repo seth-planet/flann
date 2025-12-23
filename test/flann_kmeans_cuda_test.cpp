@@ -1473,16 +1473,21 @@ TEST_F(KMeansCUDA_SIFT10K, TestGPUDirect)
 	CUDA_CHECK(cudaMalloc(&d_indices, num_queries * k * sizeof(int)));
 	CUDA_CHECK(cudaMalloc(&d_dists, num_queries * k * sizeof(float)));
 
+	// Create stream for async execution
+	cudaStream_t stream;
+	CUDA_CHECK(cudaStreamCreate(&stream));
+
 	// Upload queries to GPU
 	CUDA_CHECK(cudaMemcpy(d_queries, query[0], num_queries * query.cols * sizeof(float),
 		cudaMemcpyHostToDevice));
 
-	// Run GPU direct search
-	int result = index.knnSearchGPUDirect(d_queries, d_indices, d_dists, num_queries, k);
+	// Run GPU direct search with stream
+	int result = index.knnSearchGPUDirect(d_queries, d_indices, d_dists, num_queries, k,
+		flann::SearchParams(128), stream);
 	EXPECT_EQ(result, (int)num_queries);
 
-	// Synchronize to ensure results are ready
-	CUDA_CHECK(cudaDeviceSynchronize());
+	// Synchronize stream before reading results
+	CUDA_CHECK(cudaStreamSynchronize(stream));
 
 	// Download results
 	std::vector<int> h_indices(num_queries * k);
@@ -1518,6 +1523,7 @@ TEST_F(KMeansCUDA_SIFT10K, TestGPUDirect)
 	EXPECT_GE(precision, 0.90f) << "Precision " << precision << " below 90% threshold";
 
 	// Cleanup
+	cudaStreamDestroy(stream);
 	cudaFree(d_queries);
 	cudaFree(d_indices);
 	cudaFree(d_dists);
@@ -1551,13 +1557,18 @@ TEST_F(KMeansCUDA_SIFT10K, TestGPUDirectMatchesGPU)
 	CUDA_CHECK(cudaMalloc(&d_indices, num_queries * k * sizeof(int)));
 	CUDA_CHECK(cudaMalloc(&d_dists, num_queries * k * sizeof(float)));
 
+	// Create stream for async execution
+	cudaStream_t stream;
+	CUDA_CHECK(cudaStreamCreate(&stream));
+
 	// Upload queries
 	CUDA_CHECK(cudaMemcpy(d_queries, query[0], num_queries * query.cols * sizeof(float),
 		cudaMemcpyHostToDevice));
 
-	// Run GPU direct search
-	index.knnSearchGPUDirect(d_queries, d_indices, d_dists, num_queries, k);
-	CUDA_CHECK(cudaDeviceSynchronize());
+	// Run GPU direct search with stream
+	index.knnSearchGPUDirect(d_queries, d_indices, d_dists, num_queries, k,
+		flann::SearchParams(128), stream);
+	CUDA_CHECK(cudaStreamSynchronize(stream));
 
 	// Download results
 	std::vector<int> direct_indices(num_queries * k);
@@ -1594,6 +1605,7 @@ TEST_F(KMeansCUDA_SIFT10K, TestGPUDirectMatchesGPU)
 	// Cleanup
 	delete[] std_indices.ptr();
 	delete[] std_dists.ptr();
+	cudaStreamDestroy(stream);
 	cudaFree(d_queries);
 	cudaFree(d_indices);
 	cudaFree(d_dists);
@@ -1676,15 +1688,20 @@ TEST_F(KMeansCUDA_SIFT10K, TestGPUDirectErrorHandling)
 	CUDA_CHECK(cudaMalloc(&d_dists, 1000));
 
 	// Test null output pointer
-	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, (int*)nullptr, d_dists, 10, 5), FLANNException);
-	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, d_indices, (float*)nullptr, 10, 5), FLANNException);
+	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, (int*)nullptr, d_dists, 10, 5,
+		flann::SearchParams(128), 0), FLANNException);
+	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, d_indices, (float*)nullptr, 10, 5,
+		flann::SearchParams(128), 0), FLANNException);
 
 	// Test unsupported k value (3 is not supported for KMeans CUDA)
-	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, d_indices, d_dists, 10, 3), FLANNException);
-	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, d_indices, d_dists, 10, 200), FLANNException);
+	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, d_indices, d_dists, 10, 3,
+		flann::SearchParams(128), 0), FLANNException);
+	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, d_indices, d_dists, 10, 200,
+		flann::SearchParams(128), 0), FLANNException);
 
 	// Test zero queries (should succeed, return 0)
-	int result = index.knnSearchGPUDirect(d_queries, d_indices, d_dists, 0, 5);
+	int result = index.knnSearchGPUDirect(d_queries, d_indices, d_dists, 0, 5,
+		flann::SearchParams(128), 0);
 	EXPECT_EQ(result, 0);
 
 	cudaFree(d_queries);
@@ -1708,7 +1725,8 @@ TEST_F(KMeansCUDA_SIFT10K, TestGPUDirectBeforeInit)
 	CUDA_CHECK(cudaMalloc(&d_indices, 1000));
 	CUDA_CHECK(cudaMalloc(&d_dists, 1000));
 
-	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, d_indices, d_dists, 10, 5), FLANNException);
+	EXPECT_THROW(index.knnSearchGPUDirect(d_queries, d_indices, d_dists, 10, 5,
+		flann::SearchParams(128), 0), FLANNException);
 
 	cudaFree(d_queries);
 	cudaFree(d_indices);

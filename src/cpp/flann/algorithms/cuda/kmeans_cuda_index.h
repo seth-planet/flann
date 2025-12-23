@@ -618,7 +618,7 @@ public:
      * @param num_queries Number of query vectors
      * @param knn Number of nearest neighbors to find
      * @param params Search parameters (checks value used for heap size)
-     * @param stream CUDA stream for async execution (nullptr = thread-local stream)
+     * @param stream CUDA stream for async execution (caller must synchronize)
      *
      * @return Number of queries processed
      * @throws FLANNException if GPU not initialized or k unsupported
@@ -641,8 +641,8 @@ public:
         float* d_dists,
         size_t num_queries,
         size_t knn,
-        const SearchParams& params = SearchParams(),
-        cudaStream_t stream = nullptr) const
+        const SearchParams& params,
+        cudaStream_t stream) const
     {
         // 1. Validate GPU initialization
         if (!gpu_initialized_) {
@@ -670,8 +670,8 @@ public:
         // 5. Thread safety - acquire shared lock for concurrent searches
         std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
 
-        // 6. Stream selection
-        cudaStream_t exec_stream = (stream != nullptr) ? stream : this->getThreadStream();
+        // 6. Use caller-provided stream
+        cudaStream_t exec_stream = stream;
 
         // 7. Handle query padding if needed
         const ElementType* kernel_queries = d_queries;
@@ -752,10 +752,7 @@ public:
         // 11. Check for kernel launch errors (non-blocking)
         CUDA_CHECK_LAST();
 
-        // 12. Synchronize to prevent race conditions when index is destroyed
-        // or when multiple indices are used sequentially
-        CUDA_CHECK(cudaStreamSynchronize(exec_stream));
-
+        // 12. No synchronization - caller is responsible for stream sync
         return static_cast<int>(num_queries);
     }
 

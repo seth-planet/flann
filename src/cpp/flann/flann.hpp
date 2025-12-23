@@ -605,7 +605,7 @@ public:
      * @param num_queries Number of query vectors
      * @param knn Number of nearest neighbors to find
      * @param params Search parameters
-     * @param stream CUDA stream for async execution (nullptr = default stream)
+     * @param stream CUDA stream for async execution (caller must synchronize)
      *
      * @return Number of queries processed
      * @throws FLANNException if not a CUDA index or GPU not initialized
@@ -619,8 +619,8 @@ public:
         DistT* d_dists,
         size_t num_queries,
         size_t knn,
-        const SearchParams& params = SearchParams(),
-        cudaStream_t stream = nullptr) const
+        const SearchParams& params,
+        cudaStream_t stream) const
     {
         flann_algorithm_t index_type = nnIndex_->getType();
 

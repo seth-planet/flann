@@ -183,8 +183,10 @@ For GPU-resident pipelines where data never leaves device memory, FLANN provides
 | Metric | Standard knnSearchGPU | knnSearchGPUDirect |
 |--------|----------------------|-------------------|
 | PCIe transfers | 4× (queries down, up; results down, up) | 0× |
-| Sync points | 1× (forced) | 0× (fully async) |
+| Sync points | 1× (internal) | Caller-controlled |
 | Overhead per batch | 2-5ms | ~0ms |
+
+**Note**: `knnSearchGPUDirect()` requires a CUDA stream parameter. The caller is responsible for synchronizing the stream before reading results.
 
 #### K-Means CUDA (Float Data)
 
@@ -206,12 +208,16 @@ flann::Index<flann::L2<float>> index(dataset, flann::KMeansCUDAIndexParams(32));
 index.buildIndex();
 index.prepareGPUIndex();  // or buildCUDAKnnSearch(k, params)
 
+// Create stream for async execution
+cudaStream_t stream;
+cudaStreamCreate(&stream);
+
 // Zero-copy search - data stays on GPU
 index.knnSearchGPUDirect(d_queries, d_indices, d_dists,
-                          num_queries, k, flann::SearchParams(128));
+                          num_queries, k, flann::SearchParams(128), stream);
 
-// Caller synchronizes when needed
-cudaDeviceSynchronize();
+// Caller synchronizes before reading results
+cudaStreamSynchronize(stream);
 ```
 
 #### Hierarchical CUDA (Binary Data)
@@ -231,15 +237,19 @@ flann::Index<flann::Hamming<unsigned char>> index(dataset,
 index.buildIndex();
 index.prepareGPUIndex();
 
+// Create stream for async execution
+cudaStream_t stream;
+cudaStreamCreate(&stream);
+
 // Zero-copy search
 index.knnSearchGPUDirect(d_queries, d_indices, d_dists,
-                          num_queries, k, flann::SearchParams(256));
-cudaDeviceSynchronize();
+                          num_queries, k, flann::SearchParams(256), stream);
+cudaStreamSynchronize(stream);
 ```
 
-#### Custom CUDA Stream Support
+#### Pipeline Integration Example
 
-For fully async pipelines, provide your own CUDA stream:
+Use your CUDA stream to integrate k-NN search into existing GPU pipelines:
 
 ```cpp
 cudaStream_t my_stream;
@@ -261,6 +271,7 @@ cudaStreamSynchronize(my_stream);
 
 #### API Notes
 
+- **Stream is required**: You must provide a CUDA stream (can use `0` for the default stream)
 - **Caller owns memory**: Allocate device memory with correct sizes before calling
 - **Caller syncs**: No internal synchronization; call `cudaStreamSynchronize()` before reading results
 - **Padding handled internally**: If `veclen % 4 != 0`, temporary padding is applied on GPU
