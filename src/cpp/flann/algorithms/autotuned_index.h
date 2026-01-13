@@ -576,7 +576,8 @@ private:
         // We use a fraction of the original dataset to speedup the autotune algorithm
         sampledDataset_ = random_sample(dataset_, sampleSize);
         // We use a cross-validation approach, first we sample a testset from the dataset
-        testDataset_ = random_sample(sampledDataset_, testSampleSize, true);
+        // Use sampling WITHOUT replacement to ensure valid ground truth computation
+        testDataset_ = random_sample(sampledDataset_, testSampleSize, false);
 
         // We compute the ground truth using linear search
         Logger::info("Computing ground truth... \n");

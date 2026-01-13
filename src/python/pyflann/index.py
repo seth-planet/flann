@@ -187,7 +187,7 @@ class FLANN(object):
         """
         if self.__curindex is not None:
             flann.save_index[self.__curindex_type](
-                self.__curindex, c_char_p(to_bytes(filename)))
+                self.__curindex, to_bytes(filename))
 
     def load_index(self, filename, pts):
         """
@@ -208,7 +208,7 @@ class FLANN(object):
             self.__curindex_type = None
 
         self.__curindex = flann.load_index[pts.dtype.type](
-            c_char_p(to_bytes(filename)), pts, npts, dim)
+            to_bytes(filename), pts, npts, dim)
         self.__curindex_data = pts
         self.__curindex_type = pts.dtype.type
         
@@ -421,6 +421,8 @@ class FLANN(object):
                   'algorithm': 'kmeans',
                   'branching': branch_size,
                   'random_seed': kwargs['random_seed']}
+        if 'centers_init' in kwargs:
+            params['centers_init'] = kwargs['centers_init']
 
         self.__flann_parameters.update(params)
 
