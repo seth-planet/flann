@@ -166,6 +166,13 @@ if (BUILD_CUDA_LIB)
         # Enable CUDA as a first-class language
         enable_language(CUDA)
 
+        # Detect Jetson platform (works in Docker containers too)
+        set(FLANN_IS_JETSON FALSE)
+        if(EXISTS "/usr/lib/aarch64-linux-gnu" AND EXISTS "/usr/local/cuda/bin/nvcc")
+            set(FLANN_IS_JETSON TRUE)
+            message(STATUS "NVIDIA Jetson platform detected")
+        endif()
+
         # CUDA Architecture Configuration
         # Supports: native (auto-detect), environment variable, or explicit list
         #
@@ -202,16 +209,26 @@ if (BUILD_CUDA_LIB)
                 string(REPLACE "." "" GPU_ARCH "${GPU_COMPUTE_CAP}")
                 # Take first GPU if multiple
                 string(REGEX REPLACE "\n.*" "" GPU_ARCH "${GPU_ARCH}")
-                set(CMAKE_CUDA_ARCHITECTURES ${GPU_ARCH} CACHE STRING "CUDA architectures" FORCE)
+                set(CMAKE_CUDA_ARCHITECTURES ${GPU_ARCH} CACHE STRING "CUDA architectures")
                 message(STATUS "CUDA native architecture detected: ${CMAKE_CUDA_ARCHITECTURES}")
             else()
-                message(WARNING "Could not detect GPU architecture, falling back to defaults")
-                set(CMAKE_CUDA_ARCHITECTURES 75 80 86 87 89 90 CACHE STRING "CUDA architectures" FORCE)
+                if(FLANN_IS_JETSON)
+                    # Jetson native detection failed (common in Docker)
+                    # Default to Orin (sm_87) - most common modern Jetson
+                    message(STATUS "Jetson detected, native detection failed - defaulting to SM 87 (Orin)")
+                    message(STATUS "For Xavier: cmake -DCMAKE_CUDA_ARCHITECTURES=72 ..")
+                    message(STATUS "For TX2:    cmake -DCMAKE_CUDA_ARCHITECTURES=62 ..")
+                    set(CMAKE_CUDA_ARCHITECTURES 87 CACHE STRING "CUDA architectures")
+                else()
+                    message(WARNING "Could not detect GPU architecture, falling back to defaults")
+                    set(CMAKE_CUDA_ARCHITECTURES 75 80 86 87 89 90 CACHE STRING "CUDA architectures")
+                endif()
             endif()
         elseif(NOT CMAKE_CUDA_ARCHITECTURES)
-            # Default: Turing + Ampere + Ada + Hopper (including Jetson Orin sm_87)
-            set(CMAKE_CUDA_ARCHITECTURES 75 80 86 87 89 90 CACHE STRING "CUDA architectures")
-            message(STATUS "CUDA architectures (default): ${CMAKE_CUDA_ARCHITECTURES}")
+            # Default: auto-detect current GPU (fastest build, smallest binary)
+            # For multi-arch builds, use: cmake -DCMAKE_CUDA_ARCHITECTURES="75;86;87" ..
+            set(CMAKE_CUDA_ARCHITECTURES native CACHE STRING "CUDA architectures")
+            message(STATUS "CUDA architectures (default): native (auto-detect)")
         else()
             message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
         endif()

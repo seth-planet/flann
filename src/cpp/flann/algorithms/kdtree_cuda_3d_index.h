@@ -76,6 +76,7 @@ public:
     typedef NNIndex<Distance> BaseClass;
 
     // Bring in base class overloads to avoid partial override warnings
+    using BaseClass::buildIndex;
     using BaseClass::knnSearch;
     using BaseClass::radiusSearch;
 
