@@ -65,6 +65,8 @@ if (BUILD_CUDA_LIB)
     set_target_properties(flann_cuda_s flann_cuda PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         POSITION_INDEPENDENT_CODE ON
+        CUDA_STANDARD 17
+        CUDA_STANDARD_REQUIRED ON
     )
 
     # Link CUDA runtime
