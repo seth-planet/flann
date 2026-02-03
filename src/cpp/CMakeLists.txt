@@ -62,8 +62,9 @@ if (BUILD_CUDA_LIB)
     add_library(flann_cuda SHARED ${CU_SOURCES})
 
     # Set CUDA properties
+    # Note: CUDA_SEPARABLE_COMPILATION not needed - all device code is self-contained
+    # in headers included by each .cu file. Removing it improves build time and optimization.
     set_target_properties(flann_cuda_s flann_cuda PROPERTIES
-        CUDA_SEPARABLE_COMPILATION ON
         POSITION_INDEPENDENT_CODE ON
         CUDA_STANDARD 17
         CUDA_STANDARD_REQUIRED ON
