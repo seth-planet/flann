@@ -23,7 +23,7 @@ target_compile_options(flann_cpp_s PRIVATE
     $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:${FLANN_COMPILE_OPTIONS_GCC}>
     $<$<CXX_COMPILER_ID:MSVC>:${FLANN_COMPILE_OPTIONS_MSVC}>
 )
-target_compile_features(flann_cpp_s PUBLIC cxx_std_14)
+set_target_properties(flann_cpp_s PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_CLANG)
     set_target_properties(flann_cpp_s PROPERTIES COMPILE_FLAGS -fPIC)
 endif()
@@ -46,7 +46,7 @@ target_compile_options(flann_cpp PRIVATE
     $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:${FLANN_COMPILE_OPTIONS_GCC}>
     $<$<CXX_COMPILER_ID:MSVC>:${FLANN_COMPILE_OPTIONS_MSVC}>
 )
-target_compile_features(flann_cpp PUBLIC cxx_std_14)
+set_target_properties(flann_cpp PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 # export lz4 headers, so that MSVC to creates flann_cpp.lib
 set_target_properties(flann_cpp PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS YES)
 
