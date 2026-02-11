@@ -149,7 +149,7 @@ public:
     }
 
 
-    void removePoint(size_t index)
+    void removePoint(size_t /*index*/)
     {
     	throw FLANNException( "removePoint not implemented for this index type!" );
     }
@@ -159,14 +159,14 @@ public:
     	return dataset_[id];
     }
 
-    void saveIndex(FILE* stream)
+    void saveIndex(FILE* /*stream*/)
     {
         throw FLANNException( "Index saving not implemented!" );
 
     }
 
 
-    void loadIndex(FILE* stream)
+    void loadIndex(FILE* /*stream*/)
     {
         throw FLANNException( "Index loading not implemented!" );
     }
@@ -274,7 +274,7 @@ public:
      * Not implemented, since it is only used by single-element searches.
      * (but is needed b/c it is abstract in the base class)
      */
-    void findNeighbors(ResultSet<DistanceType>& result, const ElementType* vec, const SearchParams& searchParams) const
+    void findNeighbors(ResultSet<DistanceType>& /*result*/, const ElementType* /*vec*/, const SearchParams& /*searchParams*/) const
     {
     }
 

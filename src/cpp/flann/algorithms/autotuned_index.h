@@ -82,6 +82,9 @@ public:
 
     typedef bool needs_kdtree_distance;
 
+    using BaseClass::knnSearch;
+    using BaseClass::radiusSearch;
+
     AutotunedIndex(const Matrix<ElementType>& inputData, const IndexParams& params = AutotunedIndexParams(), Distance d = Distance()) :
         BaseClass(params, d), bestIndex_(NULL), speedup_(0), dataset_(inputData)
     {
@@ -291,7 +294,7 @@ public:
     /**
      *      Method that searches for nearest-neighbors
      */
-    void findNeighbors(ResultSet<DistanceType>& result, const ElementType* vec, const SearchParams& searchParams) const
+    void findNeighbors(ResultSet<DistanceType>& /*result*/, const ElementType* /*vec*/, const SearchParams& /*searchParams*/) const
     {
         // should not get here
         assert(false);

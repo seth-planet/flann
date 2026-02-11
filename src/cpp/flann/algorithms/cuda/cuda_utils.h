@@ -151,6 +151,34 @@ public:
     }
 
     /**
+     * @brief Allocate device memory using stream-ordered allocation (non-blocking)
+     *
+     * Uses cudaMallocAsync to avoid CPU-GPU synchronization stalls from cudaMalloc.
+     * Memory is allocated from the device's memory pool and can be reused across
+     * calls without OS allocation overhead.
+     *
+     * @param count Number of elements (not bytes)
+     * @param stream CUDA stream for ordered allocation
+     * @throws FLANNException if allocation fails
+     *
+     * @note Use freeAsync(stream) for explicit deallocation. The destructor
+     *       falls back to sync cudaFree as a safety net (e.g., exception unwinding).
+     */
+    explicit CUDABuffer(size_t count, cudaStream_t stream)
+        : ptr_(nullptr), count_(count), size_bytes_(count * sizeof(T))
+    {
+        if (count > 0) {
+            cudaError_t err = cudaMallocAsync(&ptr_, size_bytes_, stream);
+            if (err != cudaSuccess) {
+                throw FLANNException(
+                    std::string("CUDA async allocation failed for ") +
+                    std::to_string(size_bytes_) + " bytes: " +
+                    cudaGetErrorString(err));
+            }
+        }
+    }
+
+    /**
      * @brief Destructor: free device memory
      * Note: Logs errors to stderr since destructors cannot throw.
      */
@@ -299,6 +327,32 @@ public:
     size_t size_bytes() const { return size_bytes_; }
     bool empty() const { return count_ == 0; }
     explicit operator bool() const { return ptr_ != nullptr; }
+
+    /**
+     * @brief Free device memory using stream-ordered deallocation (non-blocking)
+     *
+     * Queues the deallocation on the stream. Memory returns to the pool for reuse
+     * by subsequent cudaMallocAsync calls. Call this BEFORE cudaStreamSynchronize
+     * to follow the NVIDIA recommended pattern: alloc → use → freeAsync → sync.
+     *
+     * Nullifies the pointer to prevent double-free in the destructor.
+     * If not called, the destructor falls back to sync cudaFree (safe for both
+     * sync and async allocations per CUDA spec).
+     *
+     * @param stream CUDA stream for ordered deallocation
+     */
+    void freeAsync(cudaStream_t stream) {
+        if (ptr_) {
+            cudaError_t err = cudaFreeAsync(ptr_, stream);
+            if (err != cudaSuccess) {
+                fprintf(stderr, "WARNING: cudaFreeAsync failed: %s\n",
+                        cudaGetErrorString(err));
+            }
+            ptr_ = nullptr;
+            count_ = 0;
+            size_bytes_ = 0;
+        }
+    }
 
 private:
     T* ptr_;

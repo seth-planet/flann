@@ -383,6 +383,8 @@ public:
      * Note: GPU resources are NOT allocated here. Call buildCUDAKnnSearch()
      * after this method to prepare GPU for searches.
      */
+    using BaseClass::buildIndex;
+
     void buildIndex() override
     {
         // Build CPU tree (reuse KMeansIndex logic)
@@ -795,7 +797,25 @@ public:
     }
 
     /**
-     * @brief GPU-accelerated k-NN batch search with size_t indices
+     * @brief GPU-accelerated k-NN batch search with caller-provided CUDA stream
+     */
+    int knnSearchGPU(const Matrix<ElementType>& queries,
+                     Matrix<int>& indices,
+                     Matrix<DistanceType>& dists,
+                     int knn,
+                     const SearchParams& params,
+                     cudaStream_t stream) const
+    {
+        if (!gpu_search_ready_) {
+            throw FLANNException("GPU search not prepared. "
+                               "Call buildCUDAKnnSearch() first.");
+        }
+
+        return knnSearchGPUImpl(queries, indices, dists, knn, params, stream);
+    }
+
+    /**
+     * @brief GPU-accelerated k-NN batch search with size_t indices (uses thread-local stream)
      */
     int knnSearchGPU(const Matrix<ElementType>& queries,
                      Matrix<size_t>& indices,
@@ -803,11 +823,26 @@ public:
                      size_t knn,
                      const SearchParams& params) const
     {
+        return knnSearchGPU(queries, indices, dists, knn, params, this->getThreadStream());
+    }
+
+    /**
+     * @brief GPU-accelerated k-NN batch search with size_t indices and caller-provided stream
+     *
+     * @param stream CUDA stream for all GPU operations in this search
+     */
+    int knnSearchGPU(const Matrix<ElementType>& queries,
+                     Matrix<size_t>& indices,
+                     Matrix<DistanceType>& dists,
+                     size_t knn,
+                     const SearchParams& params,
+                     cudaStream_t stream) const
+    {
         // Allocate temporary int matrix
         std::vector<int> indices_int_data(indices.rows * indices.cols);
         Matrix<int> indices_int(&indices_int_data[0], indices.rows, indices.cols);
 
-        int result = knnSearchGPU(queries, indices_int, dists, (int)knn, params);
+        int result = knnSearchGPU(queries, indices_int, dists, (int)knn, params, stream);
 
         // Copy back to size_t
         for (size_t i = 0; i < indices.rows; ++i) {
@@ -930,9 +965,6 @@ protected:
 
         // Calculate sizes (matching the workspace layout)
         size_t node_index_size = workspace_offset_variance_ / sizeof(int);
-        size_t node_index_bytes = node_index_size * sizeof(int);
-        size_t variance_bytes = num_nodes_ * sizeof(float);
-        size_t pivots_bytes = num_nodes_ * padded_veclen_ * sizeof(ElementType);
         size_t dataset_bytes = this->size_ * padded_veclen_ * sizeof(ElementType);
 
         // Calculate total workspace size (with alignment padding)
@@ -1126,6 +1158,21 @@ protected:
                          int knn,
                          const SearchParams& params) const
     {
+        return knnSearchGPUImpl(queries, indices, dists, knn, params, this->getThreadStream());
+    }
+
+    /**
+     * @brief GPU k-NN search implementation with caller-provided stream
+     *
+     * @param stream CUDA stream for all GPU operations in this search
+     */
+    int knnSearchGPUImpl(const Matrix<ElementType>& queries,
+                         Matrix<int>& indices,
+                         Matrix<DistanceType>& dists,
+                         int knn,
+                         const SearchParams& params,
+                         cudaStream_t stream) const
+    {
         if (!gpu_initialized_) {
             throw FLANNException("Index not built or GPU data not uploaded");
         }
@@ -1141,9 +1188,6 @@ protected:
         // Acquire shared lock - allows multiple concurrent searches
         // Mutations (addPoints, removePoint) acquire exclusive lock and wait for searches to complete
         std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
-
-        // Get thread-local CUDA stream for concurrent GPU operations
-        cudaStream_t stream = this->getThreadStream();
 
         size_t num_queries = queries.rows;
 
@@ -1182,14 +1226,14 @@ protected:
             }
         }
 
-        // Upload queries to GPU (using thread-local stream)
-        CUDABuffer<ElementType> queries_gpu(num_queries * padded_veclen_);
+        // Upload queries to GPU using stream-ordered allocation
+        CUDABuffer<ElementType> queries_gpu(num_queries * padded_veclen_, stream);
         if (padded_veclen_ == this->veclen_) {
             // Fast path: no padding needed, direct upload
             queries_gpu.upload(queries[0], num_queries * this->veclen_, stream);
         } else {
             // Padding needed: upload raw then pad on GPU
-            CUDABuffer<ElementType> raw_queries_gpu(num_queries * this->veclen_);
+            CUDABuffer<ElementType> raw_queries_gpu(num_queries * this->veclen_, stream);
             raw_queries_gpu.upload(queries[0], num_queries * this->veclen_, stream);
             if (!launch_pad_queries<ElementType>(
                     raw_queries_gpu.get(),
@@ -1200,11 +1244,12 @@ protected:
                     stream)) {
                 throw FLANNException("Failed to launch GPU padding kernel");
             }
+            raw_queries_gpu.freeAsync(stream);
         }
 
-        // Allocate result buffers on GPU
-        CUDABuffer<int> indices_gpu(num_queries * knn);
-        CUDABuffer<float> dists_gpu(num_queries * knn);
+        // Allocate result buffers on GPU using stream-ordered allocation
+        CUDABuffer<int> indices_gpu(num_queries * knn, stream);
+        CUDABuffer<float> dists_gpu(num_queries * knn, stream);
 
         // Calculate grid/block dimensions
         int threads_per_block = 128;
@@ -1291,7 +1336,6 @@ protected:
         CUDA_CHECK_LAST();
 
         // Download results using pinned memory for faster DMA transfers
-        // Use async transfers on thread-local stream to overlap both downloads
         PinnedBuffer<int> indices_host(num_queries * knn);
         PinnedBuffer<float> dists_host(num_queries * knn);
 
@@ -1299,7 +1343,12 @@ protected:
         indices_gpu.download(indices_host.get(), num_queries * knn, stream);
         dists_gpu.download(dists_host.get(), num_queries * knn, stream);
 
-        // Single sync point - waits for kernel + both downloads on this thread's stream
+        // Stream-ordered free: queue deallocation before sync (NVIDIA recommended pattern)
+        queries_gpu.freeAsync(stream);
+        indices_gpu.freeAsync(stream);
+        dists_gpu.freeAsync(stream);
+
+        // Single sync point - waits for kernel + downloads + frees
         CUDA_CHECK(cudaStreamSynchronize(stream));
         CUDA_CHECK_LAST();  // Check for any errors after sync
 

@@ -36,6 +36,8 @@
 #include <time.h>
 #include <chrono>
 #include <set>
+#include <thread>
+#include <atomic>
 
 #include <flann/flann.h>
 #include <flann/io/hdf5.h>
@@ -1731,6 +1733,217 @@ TEST_F(KMeansCUDA_SIFT10K, TestGPUDirectBeforeInit)
 	cudaFree(d_queries);
 	cudaFree(d_indices);
 	cudaFree(d_dists);
+}
+
+// ============================================================================
+// Stream Overload Tests
+// Tests for knnSearchGPU with caller-provided cudaStream_t
+// ============================================================================
+
+/**
+ * Test: knnSearchGPU stream overload produces correct results
+ * matching the default (thread-local stream) path exactly.
+ * K-Means search is deterministic — results must be identical.
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestStreamOverloadMatchesDefault)
+{
+    // Build index
+    flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+    index.prepareGPUIndex();
+
+    size_t k = knn;
+    size_t num_queries = query.rows;
+
+    // Allocate two sets of output matrices
+    std::vector<size_t> idx1_data(num_queries * k), idx2_data(num_queries * k);
+    std::vector<float> dist1_data(num_queries * k), dist2_data(num_queries * k);
+    flann::Matrix<size_t> indices1(idx1_data.data(), num_queries, k);
+    flann::Matrix<size_t> indices2(idx2_data.data(), num_queries, k);
+    flann::Matrix<float> dists1(dist1_data.data(), num_queries, k);
+    flann::Matrix<float> dists2(dist2_data.data(), num_queries, k);
+
+    // Search with default (thread-local stream)
+    index.knnSearchGPU(query, indices1, dists1, k, flann::SearchParams(128));
+
+    // Search with explicit non-blocking stream
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    index.knnSearchGPU(query, indices2, dists2, k, flann::SearchParams(128), stream);
+    cudaStreamDestroy(stream);
+
+    // K-Means is deterministic — results must match exactly
+    for (size_t i = 0; i < num_queries; ++i) {
+        for (size_t j = 0; j < k; ++j) {
+            EXPECT_EQ(indices1[i][j], indices2[i][j])
+                << "Index mismatch at [" << i << "][" << j << "]";
+            EXPECT_FLOAT_EQ(dists1[i][j], dists2[i][j])
+                << "Distance mismatch at [" << i << "][" << j << "]";
+        }
+    }
+
+    // Also verify results are valid against ground truth
+    size_t matches = 0;
+    for (size_t i = 0; i < num_queries; ++i) {
+        for (size_t j = 0; j < k; ++j) {
+            for (size_t m = 0; m < gt_indices.cols && m < k; ++m) {
+                if (indices2[i][j] == gt_indices[i][m]) { matches++; break; }
+            }
+        }
+    }
+    float precision = (float)matches / (num_queries * k);
+    printf("TestStreamOverloadMatchesDefault precision: %.2f%%\n", precision * 100);
+    EXPECT_GE(precision, 0.90f) << "Precision below 90% threshold";
+}
+
+/**
+ * Test: Public flann::Index::knnSearchGPU with stream parameter
+ * Verifies the dispatcher in flann.hpp correctly forwards to the underlying index.
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestFlannIndexStreamOverload)
+{
+    // Build via public API
+    flann::Index<flann::L2<float>> index(data, flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+    index.prepareGPUIndex();
+
+    size_t k = knn;
+    size_t num_queries = query.rows;
+
+    // Allocate output matrices
+    std::vector<size_t> idx_stream_data(num_queries * k), idx_default_data(num_queries * k);
+    std::vector<float> dist_stream_data(num_queries * k), dist_default_data(num_queries * k);
+    flann::Matrix<size_t> indices_stream(idx_stream_data.data(), num_queries, k);
+    flann::Matrix<size_t> indices_default(idx_default_data.data(), num_queries, k);
+    flann::Matrix<float> dists_stream(dist_stream_data.data(), num_queries, k);
+    flann::Matrix<float> dists_default(dist_default_data.data(), num_queries, k);
+
+    // Search with stream via public API
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    int result = index.knnSearchGPU(query, indices_stream, dists_stream, k,
+                                     flann::SearchParams(128), stream);
+    EXPECT_EQ(result, (int)num_queries);
+    cudaStreamDestroy(stream);
+
+    // Compare with standard knnSearch (dispatches to GPU internally)
+    index.knnSearch(query, indices_default, dists_default, k, flann::SearchParams(128));
+
+    // Results must match (same index, deterministic K-Means)
+    for (size_t i = 0; i < num_queries; ++i) {
+        for (size_t j = 0; j < k; ++j) {
+            EXPECT_EQ(indices_stream[i][j], indices_default[i][j]);
+            EXPECT_FLOAT_EQ(dists_stream[i][j], dists_default[i][j]);
+        }
+    }
+}
+
+/**
+ * Regression test: Index can be safely destroyed after stream search.
+ * Guards against the race condition in commit 09624f4 where async kernel
+ * operations on workspace_gpu_ were still running when the index was destroyed.
+ *
+ * Since knnSearchGPU() calls cudaStreamSynchronize(stream) before returning,
+ * all GPU work is complete by the time the index destructor runs.
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestIndexDestroyAfterStreamSearch)
+{
+    size_t k = knn;
+    size_t num_queries = query.rows;
+
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+
+    {
+        // Index in block scope — will be destroyed at end of block
+        flann::Index<flann::L2<float>> index(data,
+            flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+        index.buildIndex();
+        index.prepareGPUIndex();
+
+        std::vector<size_t> idx_data(num_queries * k);
+        std::vector<float> dist_data(num_queries * k);
+        flann::Matrix<size_t> idx(idx_data.data(), num_queries, k);
+        flann::Matrix<float> dst(dist_data.data(), num_queries, k);
+
+        // Search with external stream
+        index.knnSearchGPU(query, idx, dst, k, flann::SearchParams(128), stream);
+
+        // Index destroyed here — must not crash
+    }
+
+    // Verify no CUDA errors from destruction
+    EXPECT_EQ(cudaSuccess, cudaGetLastError())
+        << "CUDA error after index destruction";
+
+    cudaStreamDestroy(stream);
+}
+
+/**
+ * Regression test: Multiple threads searching with different streams concurrently.
+ * Guards against the race condition in commit a0cae7b where last_search_stream_
+ * (std::atomic) only tracked one stream, leaving other threads unprotected.
+ *
+ * Since our implementation uses no stored stream state (stream is a function
+ * parameter used within scope), there is no cross-thread race.
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestConcurrentStreamOverloads)
+{
+    flann::Index<flann::L2<float>> index(data,
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+    index.prepareGPUIndex();
+
+    size_t k = knn;
+    size_t num_queries = query.rows;
+    const int num_threads = 4;
+
+    std::vector<std::thread> threads;
+    std::vector<float> precisions(num_threads, 0.0f);
+    std::atomic<bool> any_error{false};
+
+    for (int t = 0; t < num_threads; ++t) {
+        threads.emplace_back([&, t]() {
+            try {
+                cudaStream_t stream;
+                CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+
+                std::vector<size_t> idx_data(num_queries * k);
+                std::vector<float> dist_data(num_queries * k);
+                flann::Matrix<size_t> idx(idx_data.data(), num_queries, k);
+                flann::Matrix<float> dst(dist_data.data(), num_queries, k);
+
+                index.knnSearchGPU(query, idx, dst, k,
+                                    flann::SearchParams(128), stream);
+
+                // Compute precision
+                size_t matches = 0;
+                for (size_t i = 0; i < num_queries; ++i) {
+                    for (size_t j = 0; j < k; ++j) {
+                        for (size_t m = 0; m < gt_indices.cols && m < k; ++m) {
+                            if (idx[i][j] == gt_indices[i][m]) { matches++; break; }
+                        }
+                    }
+                }
+                precisions[t] = (float)matches / (num_queries * k);
+
+                cudaStreamDestroy(stream);
+            } catch (const std::exception& e) {
+                fprintf(stderr, "Thread %d failed: %s\n", t, e.what());
+                any_error = true;
+            }
+        });
+    }
+
+    for (auto& t : threads) t.join();
+
+    EXPECT_FALSE(any_error) << "One or more threads threw an exception";
+
+    for (int t = 0; t < num_threads; ++t) {
+        printf("Thread %d precision: %.2f%%\n", t, precisions[t] * 100);
+        EXPECT_GE(precisions[t], 0.90f)
+            << "Thread " << t << " precision below 90% threshold";
+    }
 }
 
 int main(int argc, char** argv)

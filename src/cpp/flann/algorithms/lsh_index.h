@@ -83,6 +83,8 @@ public:
 
     typedef NNIndex<Distance> BaseClass;
 
+    using BaseClass::knnSearch;
+
     /** Constructor
      * @param params parameters passed to the LSH algorithm
      * @param d the distance used

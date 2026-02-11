@@ -284,13 +284,13 @@ TEST_F(Flann_3D_Random_Cloud, Test4NN)
 TEST_F(Flann_3D_Random_Cloud, Test4NNGpuBuffers)
 {
 	thrust::host_vector<float4> data_host(data.rows);
-	for( int i=0; i<data.rows; i++ )
+	for( size_t i=0; i<data.rows; i++ )
 	{
 		data_host[i]=make_float4(data[i][0],data[i][1],data[i][2],0);
 	}
 	thrust::device_vector<float4> data_device = data_host;
 	thrust::host_vector<float4> query_host(data.rows);
-	for( int i=0; i<data.rows; i++ )
+	for( size_t i=0; i<data.rows; i++ )
 	{
 		query_host[i]=make_float4(query[i][0],query[i][1],query[i][2],0);
 	}
@@ -348,9 +348,9 @@ TEST_F(Flann_3D_Random_Cloud, TestRadiusSearchVector)
 	printf("done (%g seconds)", stop_timer());
 
 	start_timer("verifying results...");
-	for( int i=0; i<query.rows; i++ )
+	for( size_t i=0; i<query.rows; i++ )
 	{
-		for( int j=0; j<data.rows; j++ )
+		for( size_t j=0; j<data.rows; j++ )
 		{
 			float dist = 0;
 			for( int k=0; k<3; k++ )
@@ -373,9 +373,9 @@ TEST_F(Flann_3D_Random_Cloud, TestRadiusSearchVector)
 	printf("done (%g seconds)", stop_timer());
 	
 	start_timer("verifying results...");
-	for( int i=0; i<query.rows; i++ )
+	for( size_t i=0; i<query.rows; i++ )
 	{
-		for( int j=0; j<data.rows; j++ )
+		for( size_t j=0; j<data.rows; j++ )
 		{
 			// for each pair of query and data points: either the distance between them
 			// is smaller than r AND the point is in the result set, or 
@@ -412,7 +412,7 @@ TEST_F(Flann_3D_Random_Cloud, TestRadiusSearchMatrix)
 	printf("done (%g seconds)", stop_timer());
 	
 	int max_neighbors=0;
-	for( int i=0; i<query.rows; i++ )
+	for( size_t i=0; i<query.rows; i++ )
 	{
 		max_neighbors = std::max(max_neighbors, counts[i][0]);
 	}
@@ -425,9 +425,9 @@ TEST_F(Flann_3D_Random_Cloud, TestRadiusSearchMatrix)
 	printf("done (%g seconds)", stop_timer());
 
 	start_timer("verifying results...");
-	for( int i=0; i<query.rows; i++ )
+	for( size_t i=0; i<query.rows; i++ )
 	{
-		for( int j=0; j<data.rows; j++ )
+		for( size_t j=0; j<data.rows; j++ )
 		{
 			// for each pair of query and data points: either the distance between them
 			// is smaller than r AND the point is in the result set, or 
@@ -465,9 +465,9 @@ TEST_F(Flann_3D, TestRadiusSearch)
 	printf("done (%g seconds)\n", stop_timer());
 	
 	start_timer("verifying results...");
-	for( int i=0; i<query.rows; i++ )
+	for( size_t i=0; i<query.rows; i++ )
 	{
-		for( int j=0; j<data.rows; j++ )
+		for( size_t j=0; j<data.rows; j++ )
 		{
 			float dist = 0;
 			for( int k=0; k<3; k++ )
@@ -490,9 +490,9 @@ TEST_F(Flann_3D, TestRadiusSearch)
 	printf("done (%g seconds)\n", stop_timer());
 	
 	start_timer("verifying results...");
-	for( int i=0; i<query.rows; i++ )
+	for( size_t i=0; i<query.rows; i++ )
 	{
-		for( int j=0; j<data.rows; j++ )
+		for( size_t j=0; j<data.rows; j++ )
 		{
 			float dist = 0;
 			for( int k=0; k<3; k++ )

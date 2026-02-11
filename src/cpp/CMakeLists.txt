@@ -69,6 +69,11 @@ if (BUILD_CUDA_LIB)
         CUDA_STANDARD 17
         CUDA_STANDARD_REQUIRED ON
     )
+    # Shared library needs device symbol resolution at library build time
+    # (static library defers this to the final executable link step)
+    set_target_properties(flann_cuda PROPERTIES
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    )
 
     # Link CUDA runtime
     target_link_libraries(flann_cuda_s PUBLIC CUDA::cudart)

@@ -1733,6 +1733,56 @@ TEST_F(HierarchicalCUDA_Brief100K, TestGPUDirectBeforeInit)
 	cudaFree(d_dists);
 }
 
+// ============================================================================
+// Stream Overload Tests
+// Tests for knnSearchGPU with caller-provided cudaStream_t
+// ============================================================================
+
+/**
+ * Test: knnSearchGPU stream overload produces valid results.
+ * Hierarchical search is nondeterministic — use distance-based comparison.
+ */
+TEST_F(HierarchicalCUDA_Brief100K, TestStreamOverloadMatchesDefault)
+{
+	using namespace flann;
+
+	cuda::HierarchicalCUDAIndex<Hamming<unsigned char>> index(
+		data, HierarchicalCUDAIndexParams(32, FLANN_CENTERS_RANDOM, 4));
+	index.buildIndex();
+	index.buildCUDAKnnSearch(k_nn_, SearchParams());
+
+	size_t num_queries = query.rows;
+
+	// Allocate two sets of output matrices
+	std::vector<size_t> idx1_data(num_queries * k_nn_), idx2_data(num_queries * k_nn_);
+	std::vector<unsigned int> dist1_data(num_queries * k_nn_), dist2_data(num_queries * k_nn_);
+	Matrix<size_t> indices1(idx1_data.data(), num_queries, k_nn_);
+	Matrix<size_t> indices2(idx2_data.data(), num_queries, k_nn_);
+	Matrix<unsigned int> dists1(dist1_data.data(), num_queries, k_nn_);
+	Matrix<unsigned int> dists2(dist2_data.data(), num_queries, k_nn_);
+
+	// Search with default (thread-local stream)
+	index.knnSearchGPU(query, indices1, dists1, k_nn_, SearchParams());
+
+	// Search with explicit non-blocking stream
+	cudaStream_t stream;
+	CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+	index.knnSearchGPU(query, indices2, dists2, k_nn_, SearchParams(), stream);
+	cudaStreamDestroy(stream);
+
+	// Hierarchical is nondeterministic — compare distances (should match exactly
+	// even when indices differ, as in existing TestKernelDeterminism)
+	size_t dist_matches = 0;
+	for (size_t i = 0; i < num_queries; ++i) {
+		for (size_t j = 0; j < k_nn_; ++j) {
+			if (dists1[i][j] == dists2[i][j]) dist_matches++;
+		}
+	}
+	float dist_match_rate = (float)dist_matches / (num_queries * k_nn_);
+	printf("TestStreamOverloadMatchesDefault distance match: %.2f%%\n", dist_match_rate * 100);
+	EXPECT_GE(dist_match_rate, 0.95f) << "Distance match rate below 95%";
+}
+
 int main(int argc, char** argv)
 {
 	testing::InitGoogleTest(&argc, argv);

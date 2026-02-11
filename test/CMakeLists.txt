@@ -53,11 +53,10 @@ if (HDF5_FOUND)
 endif()
 
 if (HDF5_FOUND AND BUILD_CUDA_LIB)
-    set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS};-Xcompiler;-fPIC;-Xcudafe \"--diag_suppress=partial_override\" ;-gencode=arch=compute_52,code=\"sm_52,compute_52\";-gencode=arch=compute_61,code=\"sm_61,compute_61\"" )
-    if (NVCC_COMPILER_BINDIR)
-        set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS};--compiler-bindir=${NVCC_COMPILER_BINDIR}")
-    endif()
-    flann_add_cuda_gtest(flann_cuda_test flann_cuda_test.cu flann_cpp ${HDF5_LIBRARIES} flann_cuda)
+    flann_add_cuda_gtest(flann_cuda_test flann_cuda_test.cu flann_cuda_s ${HDF5_LIBRARIES})
+    target_link_libraries(flann_cuda_test ${LZ4_LIBRARIES} CUDA::cudart)
+    # Suppress OpenMP pragma warnings when compiled under nvcc (harmless, no OpenMP in CUDA)
+    target_compile_options(flann_cuda_test PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wno-unknown-pragmas>)
 endif()
 
 #---------- benchmark executable --------------

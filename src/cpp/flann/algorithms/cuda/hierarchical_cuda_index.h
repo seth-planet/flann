@@ -1251,31 +1251,45 @@ protected:
         }
     }
 
+public:
     // ========================================================================
     // GPU Search Implementation
     // ========================================================================
 
     /**
-     * @brief Perform k-NN search on GPU (implementation)
-     *
-     * Launches CUDA kernel for hierarchical search with:
-     * - Thread-per-query design
-     * - Best-first tree traversal with Hamming distance
-     * - Priority queue for unexplored nodes
-     * - Max-heap for k-NN results
-     *
-     * @param queries Query descriptors
-     * @param indices Output indices
-     * @param dists Output distances
-     * @param knn Number of nearest neighbors
-     * @param params Search parameters
-     * @return Number of neighbors found
+     * @brief GPU-accelerated k-NN batch search (uses thread-local stream)
      */
     int knnSearchGPU(const Matrix<ElementType>& queries,
                      Matrix<size_t>& indices,
                      Matrix<DistanceType>& dists,
                      size_t knn,
                      const SearchParams& params) const
+    {
+        return knnSearchGPU(queries, indices, dists, knn, params, this->getThreadStream());
+    }
+
+    /**
+     * @brief GPU-accelerated k-NN batch search with caller-provided CUDA stream
+     *
+     * Performs k-nearest neighbor search on the GPU using the specified stream
+     * for all GPU operations (memory allocation, transfers, kernel execution).
+     * Synchronizes the stream before returning — results are ready in host
+     * matrices when this function returns.
+     *
+     * @param queries Query descriptors
+     * @param indices Output indices
+     * @param dists Output distances
+     * @param knn Number of nearest neighbors
+     * @param params Search parameters
+     * @param stream CUDA stream for all GPU operations in this search
+     * @return Number of neighbors found
+     */
+    int knnSearchGPU(const Matrix<ElementType>& queries,
+                     Matrix<size_t>& indices,
+                     Matrix<DistanceType>& dists,
+                     size_t knn,
+                     const SearchParams& params,
+                     cudaStream_t stream) const
     {
         if (!gpu_initialized_) {
             throw FLANNException("Index not built or GPU data not uploaded");
@@ -1292,9 +1306,6 @@ protected:
         // Acquire shared lock - allows multiple concurrent searches
         // Mutations (addPoints, removePoint) acquire exclusive lock and wait for searches to complete
         std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
-
-        // Get thread-local CUDA stream for concurrent GPU operations
-        cudaStream_t stream = this->getThreadStream();
 
         size_t num_queries = queries.rows;
 
@@ -1321,11 +1332,11 @@ protected:
         // Must use identical formula for comparison
         int padded_bytes = 4 * ((this->veclen_ + 3) / 4);
 
-        // Allocate per-search GPU buffers (freed automatically when function returns)
-        // Trade-off: ~5-8ms allocation overhead per search, but saves ~660MB persistent memory
-        CUDABuffer<ElementType> gpu_queries(num_queries * padded_bytes);
-        CUDABuffer<int> gpu_indices(num_queries * knn);
-        CUDABuffer<int> gpu_dists(num_queries * knn);
+        // Allocate per-search GPU buffers using stream-ordered allocation
+        // Memory pool reuses buffers across searches without OS allocation overhead
+        CUDABuffer<ElementType> gpu_queries(num_queries * padded_bytes, stream);
+        CUDABuffer<int> gpu_indices(num_queries * knn, stream);
+        CUDABuffer<int> gpu_dists(num_queries * knn, stream);
 
         // Require contiguous queries (O(1) stride check instead of O(n) pointer loop)
         if (queries.stride != this->veclen_ * sizeof(ElementType)) {
@@ -1345,13 +1356,13 @@ protected:
             }
         }
 
-        // Upload queries to GPU (using thread-local stream)
+        // Upload queries to GPU
         if ((size_t)padded_bytes == this->veclen_) {
             // Fast path: no padding needed, direct upload
             gpu_queries.upload(queries[0], num_queries * this->veclen_, stream);
         } else {
             // Padding needed: upload raw then pad on GPU
-            CUDABuffer<ElementType> raw_queries_gpu(num_queries * this->veclen_);
+            CUDABuffer<ElementType> raw_queries_gpu(num_queries * this->veclen_, stream);
             raw_queries_gpu.upload(queries[0], num_queries * this->veclen_, stream);
             if (!launch_pad_queries<ElementType>(
                     raw_queries_gpu.get(),
@@ -1362,9 +1373,10 @@ protected:
                     stream)) {
                 throw FLANNException("Failed to launch GPU padding kernel");
             }
+            raw_queries_gpu.freeAsync(stream);  // Free padding temp buffer
         }
 
-        // Run cooperative kernel (on thread-local stream)
+        // Run cooperative kernel
         bool success = launch_hierarchical_search_cooperative(
             reinterpret_cast<const unsigned char*>(dataset_ptr_),
             reinterpret_cast<const unsigned char*>(gpu_queries.get()),
@@ -1389,7 +1401,6 @@ protected:
         CUDA_CHECK_LAST();
 
         // Download results using pinned memory for faster DMA transfers
-        // Use async transfers on thread-local stream to overlap both downloads
         PinnedBuffer<int> result_indices(num_queries * knn);
         PinnedBuffer<int> result_dists(num_queries * knn);
 
@@ -1397,7 +1408,12 @@ protected:
         gpu_indices.download(result_indices.get(), num_queries * knn, stream);
         gpu_dists.download(result_dists.get(), num_queries * knn, stream);
 
-        // Single sync point - waits for kernel + both downloads on this thread's stream
+        // Stream-ordered free: queue deallocation before sync (NVIDIA recommended pattern)
+        gpu_queries.freeAsync(stream);
+        gpu_indices.freeAsync(stream);
+        gpu_dists.freeAsync(stream);
+
+        // Single sync point - waits for kernel + downloads + frees
         CUDA_CHECK(cudaStreamSynchronize(stream));
         CUDA_CHECK_LAST();  // Check for any errors after sync
 
@@ -1410,7 +1426,6 @@ protected:
         }
 
         return num_queries;
-        // gpu_queries, gpu_indices, gpu_dists freed automatically here
     }
 
 private:

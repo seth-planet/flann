@@ -153,7 +153,7 @@ public:
 	 * @param points Matrix with points to be added
 	 * @param rebuild_threshold
 	 */
-    virtual void addPoints(const Matrix<ElementType>& points, float rebuild_threshold = 2)
+    virtual void addPoints(const Matrix<ElementType>& /*points*/, float /*rebuild_threshold*/ = 2)
     {
         throw FLANNException("Functionality not supported by this index");
     }
@@ -794,7 +794,7 @@ protected:
      * @param[in] knn Number of nearest neighbors to retrieve.
      * @return Boolean, true if we should do a OpenCL search.
      */
-    virtual int shouldCLKnnSearch(int numQueries, size_t knn, const SearchParams& params) const
+    virtual int shouldCLKnnSearch(int /*numQueries*/, size_t /*knn*/, const SearchParams& /*params*/) const
     {
         return false;
     }
@@ -809,11 +809,11 @@ protected:
      * @param[in] knn Number of nearest neighbors to return per query.
      * @param[in] params Parameters to use for the search.
      */
-    virtual void knnSearchCL(const Matrix<ElementType>& queries,
-                             Matrix<size_t>& indices,
-                             Matrix<DistanceType>& dists,
-                             size_t knn,
-                             const SearchParams& params ) const
+    virtual void knnSearchCL(const Matrix<ElementType>& /*queries*/,
+                             Matrix<size_t>& /*indices*/,
+                             Matrix<DistanceType>& /*dists*/,
+                             size_t /*knn*/,
+                             const SearchParams& /*params*/ ) const
     {
         // unimplemented in nn_index
         printf("in unimplemented knnSearchCL()!\n");

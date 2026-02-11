@@ -645,6 +645,78 @@ public:
         throw FLANNException("knnSearchGPUDirect() only supported for CUDA index types "
             "(FLANN_INDEX_KMEANS_CUDA, FLANN_INDEX_HIERARCHICAL_CUDA)");
     }
+
+    /**
+     * @brief GPU-accelerated k-NN search using thread-local CUDA stream
+     *
+     * Convenience wrapper that delegates to the stream overload using each
+     * CUDA index's thread-local stream pool.
+     */
+    int knnSearchGPU(const Matrix<ElementType>& queries,
+                     Matrix<size_t>& indices,
+                     Matrix<DistanceType>& dists,
+                     size_t knn,
+                     const SearchParams& params) const
+    {
+        flann_algorithm_t index_type = nnIndex_->getType();
+
+        if (index_type == FLANN_INDEX_KMEANS_CUDA) {
+            return static_cast<cuda::KMeansCUDAIndex<Distance>*>(nnIndex_)
+                ->knnSearchGPU(queries, indices, dists, knn, params);
+        }
+
+        if (index_type == FLANN_INDEX_HIERARCHICAL_CUDA) {
+            return static_cast<cuda::HierarchicalCUDAIndex<Distance>*>(nnIndex_)
+                ->knnSearchGPU(queries, indices, dists, knn, params);
+        }
+
+        throw FLANNException("knnSearchGPU() only supported for CUDA index types "
+            "(FLANN_INDEX_KMEANS_CUDA, FLANN_INDEX_HIERARCHICAL_CUDA)");
+    }
+
+    /**
+     * @brief GPU-accelerated k-NN search with caller-provided CUDA stream
+     *
+     * Performs k-nearest neighbor search using the specified CUDA stream for
+     * all GPU operations (memory allocation, data transfers, kernel execution).
+     * Unlike knnSearchGPUDirect(), this method takes host Matrix objects and
+     * handles all CPU<->GPU transfers internally.
+     *
+     * The stream is synchronized before returning — results are ready in the
+     * host output matrices when this function returns.
+     *
+     * @param queries Query vectors [num_queries x veclen]
+     * @param indices Output indices of nearest neighbors [num_queries x knn]
+     * @param dists   Output distances to nearest neighbors [num_queries x knn]
+     * @param knn     Number of nearest neighbors to find
+     * @param params  Search parameters (checks, eps, etc.)
+     * @param stream  CUDA stream for all GPU operations
+     *
+     * @return Number of queries processed
+     * @throws FLANNException if not a CUDA index or GPU not initialized
+     */
+    int knnSearchGPU(const Matrix<ElementType>& queries,
+                     Matrix<size_t>& indices,
+                     Matrix<DistanceType>& dists,
+                     size_t knn,
+                     const SearchParams& params,
+                     cudaStream_t stream) const
+    {
+        flann_algorithm_t index_type = nnIndex_->getType();
+
+        if (index_type == FLANN_INDEX_KMEANS_CUDA) {
+            return static_cast<cuda::KMeansCUDAIndex<Distance>*>(nnIndex_)
+                ->knnSearchGPU(queries, indices, dists, knn, params, stream);
+        }
+
+        if (index_type == FLANN_INDEX_HIERARCHICAL_CUDA) {
+            return static_cast<cuda::HierarchicalCUDAIndex<Distance>*>(nnIndex_)
+                ->knnSearchGPU(queries, indices, dists, knn, params, stream);
+        }
+
+        throw FLANNException("knnSearchGPU() with stream only supported for CUDA index types "
+            "(FLANN_INDEX_KMEANS_CUDA, FLANN_INDEX_HIERARCHICAL_CUDA)");
+    }
 #endif /* FLANN_USE_CUDA */
 
 private:
