@@ -1,14 +1,20 @@
 // Note: FLANN_USE_CUDA is defined via CMake target_compile_definitions
+//
+// Thrust/CUB headers MUST come before FLANN headers because:
+// - CUB (included by thrust) uses bare `cuda::` namespace references
+// - FLANN headers define `flann::cuda` namespace
+// - nvcc cannot disambiguate `cuda::` if both `::cuda` and `flann::cuda`
+//   are visible at the same point in the translation unit
+#include <thrust/host_vector.h>
+#include <thrust/device_vector.h>
+#include <vector_functions.h>
+
 #include <gtest/gtest.h>
 #include <time.h>
 #include <flann/flann.h>
 #include <flann/io/hdf5.h>
 #include <flann/nn/ground_truth.h>
-#include <thrust/host_vector.h>
-#include <thrust/device_vector.h>
-#include <vector_functions.h>
 
-using namespace flann;
 
 
 float compute_precision(const flann::Matrix<int>& match, const flann::Matrix<int>& indices)
@@ -134,7 +140,7 @@ protected:
 
 TEST_F(Flann_3D, KDTreeSingleTest)
 {
-    flann::Index<L2_Simple<float> > index(data, flann::KDTreeSingleIndexParams(12, false));
+    flann::Index<flann::L2_Simple<float> > index(data, flann::KDTreeSingleIndexParams(12, false));
     start_timer("Building kd-tree index...");
     index.buildIndex();
     printf("done (%g seconds)\n", stop_timer());
@@ -151,7 +157,7 @@ TEST_F(Flann_3D, KDTreeSingleTest)
 
 TEST_F(Flann_3D, KDTreeCudaTest)
 {
-    flann::Index<L2_Simple<float> > index(data, flann::KDTreeCuda3dIndexParams());
+    flann::Index<flann::L2_Simple<float> > index(data, flann::KDTreeCuda3dIndexParams());
     start_timer("Building kd-tree index...");
     index.buildIndex();
     printf("done (%g seconds)\n", stop_timer());
@@ -209,7 +215,7 @@ protected:
 		gt_indices = flann::Matrix<int>(new int[query.rows*max_nn], query.rows, max_nn);
 		
 		
-		Index<L2<float> > index(data, flann::LinearIndexParams());
+		flann::Index<flann::L2<float> > index(data, flann::LinearIndexParams());
 		start_timer("Building linear index...");
 		index.buildIndex();
 		printf("done (%g seconds)\n", stop_timer());
@@ -237,7 +243,7 @@ protected:
 
 TEST_F(Flann_3D_Random_Cloud, Test1NN)
 {
-    flann::Index<L2_Simple<float> > index(data, flann::KDTreeCuda3dIndexParams());
+    flann::Index<flann::L2_Simple<float> > index(data, flann::KDTreeCuda3dIndexParams());
     start_timer("Building kd-tree index...");
     index.buildIndex();
     printf("done (%g seconds)\n", stop_timer());
@@ -257,7 +263,7 @@ TEST_F(Flann_3D_Random_Cloud, Test1NN)
 
 TEST_F(Flann_3D_Random_Cloud, Test4NN)
 {
-    flann::Index<L2_Simple<float> > index(data, flann::KDTreeCuda3dIndexParams());
+    flann::Index<flann::L2_Simple<float> > index(data, flann::KDTreeCuda3dIndexParams());
     start_timer("Building kd-tree index...");
     index.buildIndex();
     printf("done (%g seconds)\n", stop_timer());
@@ -272,7 +278,7 @@ TEST_F(Flann_3D_Random_Cloud, Test4NN)
 	float precision = computePrecisionDiscrete(gt_dists,dists, 1e-08);
     EXPECT_GE(precision, 0.99);
     printf("Precision: %g\n", precision);
-	
+
 }
 
 TEST_F(Flann_3D_Random_Cloud, Test4NNGpuBuffers)
@@ -295,7 +301,7 @@ TEST_F(Flann_3D_Random_Cloud, Test4NNGpuBuffers)
 	
 	flann::KDTreeCuda3dIndexParams index_params;
 	index_params["input_is_gpu_float4"]=true;
-	flann::Index<L2_Simple<float> > index(data_device_matrix, index_params);
+	flann::Index<flann::L2_Simple<float> > index(data_device_matrix, index_params);
     start_timer("Building kd-tree index...");
     index.buildIndex();
     printf("done (%g seconds)\n", stop_timer());
@@ -330,7 +336,7 @@ TEST_F(Flann_3D_Random_Cloud, Test4NNGpuBuffers)
 
 TEST_F(Flann_3D_Random_Cloud, TestRadiusSearchVector)
 {
-    flann::Index<L2_Simple<float> > index(data, flann::KDTreeCuda3dIndexParams());
+    flann::Index<flann::L2_Simple<float> > index(data, flann::KDTreeCuda3dIndexParams());
     start_timer("Building kd-tree index...");
     index.buildIndex();
     printf("done (%g seconds)\n", stop_timer());
@@ -392,7 +398,7 @@ TEST_F(Flann_3D_Random_Cloud, TestRadiusSearchVector)
 
 TEST_F(Flann_3D_Random_Cloud, TestRadiusSearchMatrix)
 {
-    flann::Index<L2_Simple<float> > index(data, flann::KDTreeCuda3dIndexParams());
+    flann::Index<flann::L2_Simple<float> > index(data, flann::KDTreeCuda3dIndexParams());
     start_timer("Building kd-tree index...");
     index.buildIndex();
     printf("done (%g seconds)\n", stop_timer());
@@ -447,7 +453,7 @@ TEST_F(Flann_3D_Random_Cloud, TestRadiusSearchMatrix)
 
 TEST_F(Flann_3D, TestRadiusSearch)
 {
-    flann::Index<L2_Simple<float> > index(data, flann::KDTreeCuda3dIndexParams());
+    flann::Index<flann::L2_Simple<float> > index(data, flann::KDTreeCuda3dIndexParams());
     start_timer("Building kd-tree index...");
     index.buildIndex();
     printf("done (%g seconds)\n", stop_timer());

@@ -234,7 +234,7 @@ if (BUILD_CUDA_LIB)
         endif()
 
         # CUDA C++ standard (match project C++ standard)
-        set(CMAKE_CUDA_STANDARD 14)
+        set(CMAKE_CUDA_STANDARD 17)
         set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
         # CUDA compiler flags

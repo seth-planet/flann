@@ -136,7 +136,7 @@ public:
      * @throws FLANNException if allocation fails
      */
     explicit CUDABuffer(size_t count = 0)
-        : ptr_(nullptr), count_(count), size_bytes_(count * sizeof(T)), dealloc_stream_(nullptr)
+        : ptr_(nullptr), count_(count), size_bytes_(count * sizeof(T))
     {
         if (count > 0) {
             cudaError_t err = cudaMalloc(&ptr_, size_bytes_);
@@ -152,27 +152,13 @@ public:
 
     /**
      * @brief Destructor: free device memory
-     * Note: Logs errors to stderr since destructors cannot throw
-     *
-     * If a deallocation stream is set, uses cudaFreeAsync (CUDA 11.2+) for
-     * stream-ordered memory deallocation. This ensures memory is only freed
-     * AFTER all operations on the stream complete, preventing race conditions
-     * when the buffer is destroyed while async kernels are still running.
+     * Note: Logs errors to stderr since destructors cannot throw.
      */
     ~CUDABuffer() {
         if (ptr_) {
-            cudaError_t err;
-            if (dealloc_stream_) {
-                // Stream-ordered free (CUDA 11.2+) - memory freed after stream operations complete
-                err = cudaFreeAsync(ptr_, dealloc_stream_);
-            } else {
-                // Traditional synchronous free
-                err = cudaFree(ptr_);
-            }
+            cudaError_t err = cudaFree(ptr_);
             if (err != cudaSuccess) {
-                // Log error to stderr - destructor can't throw but shouldn't silently fail
-                fprintf(stderr, "WARNING: %s failed in CUDABuffer destructor: %s\n",
-                        dealloc_stream_ ? "cudaFreeAsync" : "cudaFree",
+                fprintf(stderr, "WARNING: cudaFree failed in CUDABuffer destructor: %s\n",
                         cudaGetErrorString(err));
             }
         }
@@ -184,33 +170,24 @@ public:
 
     // Enable move
     CUDABuffer(CUDABuffer&& other) noexcept
-        : ptr_(other.ptr_), count_(other.count_), size_bytes_(other.size_bytes_),
-          dealloc_stream_(other.dealloc_stream_)
+        : ptr_(other.ptr_), count_(other.count_), size_bytes_(other.size_bytes_)
     {
         other.ptr_ = nullptr;
         other.count_ = 0;
         other.size_bytes_ = 0;
-        other.dealloc_stream_ = nullptr;
     }
 
     CUDABuffer& operator=(CUDABuffer&& other) noexcept {
         if (this != &other) {
-            // Free existing memory using stream-ordered free if stream is set
             if (ptr_) {
-                if (dealloc_stream_) {
-                    cudaFreeAsync(ptr_, dealloc_stream_);
-                } else {
-                    cudaFree(ptr_);
-                }
+                cudaFree(ptr_);
             }
             ptr_ = other.ptr_;
             count_ = other.count_;
             size_bytes_ = other.size_bytes_;
-            dealloc_stream_ = other.dealloc_stream_;
             other.ptr_ = nullptr;
             other.count_ = 0;
             other.size_bytes_ = 0;
-            other.dealloc_stream_ = nullptr;
         }
         return *this;
     }
@@ -296,19 +273,12 @@ public:
     void resize(size_t new_count) {
         if (new_count == count_) return;
 
-        // Free existing memory using stream-ordered free if stream is set
         if (ptr_) {
-            if (dealloc_stream_) {
-                cudaFreeAsync(ptr_, dealloc_stream_);
-            } else {
-                cudaFree(ptr_);
-            }
+            cudaFree(ptr_);
         }
         ptr_ = nullptr;
         count_ = new_count;
         size_bytes_ = new_count * sizeof(T);
-        // Note: dealloc_stream_ is preserved for the new allocation
-
         if (new_count > 0) {
             cudaError_t err = cudaMalloc(&ptr_, size_bytes_);
             if (err != cudaSuccess) {
@@ -330,41 +300,10 @@ public:
     bool empty() const { return count_ == 0; }
     explicit operator bool() const { return ptr_ != nullptr; }
 
-    /**
-     * @brief Set stream for stream-ordered deallocation (CUDA 11.2+)
-     *
-     * When set, the destructor will use cudaFreeAsync instead of cudaFree,
-     * ensuring memory is only freed AFTER all operations on the stream complete.
-     * This prevents race conditions when the buffer is destroyed while async
-     * kernels launched on this stream are still running.
-     *
-     * @param stream CUDA stream for ordered deallocation (nullptr = sync free)
-     *
-     * Usage:
-     * @code
-     * CUDABuffer<float> buffer(1024);
-     * my_kernel<<<grid, block, 0, stream>>>(buffer.get(), ...);
-     * buffer.setDeallocationStream(stream);
-     * // Buffer can now be destroyed safely - memory freed after kernel completes
-     * @endcode
-     */
-    void setDeallocationStream(cudaStream_t stream) {
-        dealloc_stream_ = stream;
-    }
-
-    /**
-     * @brief Get the stream set for deallocation
-     * @return CUDA stream for ordered deallocation, or nullptr if not set
-     */
-    cudaStream_t getDeallocationStream() const {
-        return dealloc_stream_;
-    }
-
 private:
     T* ptr_;
     size_t count_;
     size_t size_bytes_;
-    cudaStream_t dealloc_stream_;  ///< Stream for stream-ordered deallocation (CUDA 11.2+)
 };
 
 // Note: PinnedBuffer was originally removed (commit 2a48cd5) because A/B testing
