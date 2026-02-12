@@ -100,14 +100,25 @@ struct HierarchicalCUDAIndexParams : public HierarchicalClusteringIndexParams
  * - Dual inheritance from HierarchicalClusteringIndex (CPU) and CUDAIndex (GPU marker)
  * - Multi-tree structure for improved recall
  * - Breadth-first tree flattening for GPU-friendly access patterns
- * - Thread-per-query design with best-first search
+ * - Cooperative block-per-query kernel: one thread block per query with shared-memory
+ *   heap, parallel bitonic sort, and cooperative node exploration
+ *   (see hierarchical_search_cooperative.cuh)
  *
- * **Usage Pattern:**
- * ```cpp
- * HierarchicalCUDAIndex<Hamming<unsigned char>> index(dataset, params);
- * index.buildIndex();                    // Build tree on CPU
- * index.buildCUDAKnnSearch(k, params);  // Upload to GPU (one-time cost)
- * index.knnSearch(queries, ...);         // Fast GPU searches
+ * **GPU Pipeline (production flow):**
+ * ```
+ * buildIndex()        → CPU tree construction
+ * prepareGPUIndex()   → Flatten + upload to GPU (one-time, K-independent)
+ *   or buildCUDAKnnSearch(k)  → Same as above + validates K
+ * knnSearchGPU()      → Host-matrix search (H→D transfer, kernel, D→H transfer)
+ * knnSearchGPUDirect()→ Device-pointer search (kernel only, zero-copy)
+ * ```
+ *
+ * **Offline conversion flow** (flann_convert_to_gpu utility):
+ * ```
+ * loadIndex()           → Load CPU-format .db file
+ * prepareGPUIndex()     → Flatten + upload
+ * convertToGPUFormat()  → Discard CPU tree, keep GPU arrays only
+ * saveIndex()           → Write GPU v2.0 format (.gpu.db / .gpu.idx)
  * ```
  *
  * **Performance Characteristics:**

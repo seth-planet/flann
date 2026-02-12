@@ -32,8 +32,14 @@
  * @brief CUDA kernel compilation unit for Hierarchical search
  *
  * This file serves as the CUDA compilation unit that compiles the
- * Hierarchical search kernels. The actual kernel implementations are in
- * hierarchical_search_kernel.cuh, which is included here and compiled by nvcc.
+ * hierarchical search kernels. The kernel implementation is in
+ * hierarchical_search_cooperative.cuh (cooperative block-per-query design),
+ * which is included here and compiled by nvcc.
+ *
+ * Architecture note: An earlier thread-per-query kernel existed during
+ * development but was superseded by the cooperative version, which achieves
+ * higher precision (0.97+ vs ~0.89) through shared-memory heaps and
+ * parallel bitonic sort. The legacy kernel was removed as dead code.
  *
  * This pattern separates:
  * - .cuh files: Device code (kernels) - included in both CPU and GPU compilation
@@ -44,13 +50,12 @@
 // Note: FLANN_USE_CUDA is defined via CMake target_compile_definitions
 
 // Include the kernel implementations
-#include "kernels/hierarchical_search_kernel.cuh"
 #include "kernels/hierarchical_search_cooperative.cuh"
 #include "kernels/utility_kernels.cuh"
 
 // This .cu file exists purely to trigger CUDA compilation of the kernels.
-// The launch_hierarchical_search() function is inline in the .cuh header and
-// will be instantiated when this file is compiled by nvcc.
+// The launch_hierarchical_cooperative_search() function is inline in the
+// .cuh header and will be instantiated when this file is compiled by nvcc.
 
 // Explicit instantiation for query padding kernel (unsigned char for Hierarchical)
 namespace flann {
