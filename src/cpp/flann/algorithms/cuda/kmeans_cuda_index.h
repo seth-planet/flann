@@ -155,19 +155,7 @@ public:
         const IndexParams& params = KMeansCUDAIndexParams(),
         Distance d = Distance())
         : BaseClass(inputData, params, d),
-          CUDAIndex(),
-          gpu_initialized_(false),
-          gpu_search_ready_(false),
-          gpu_only_mode_(false),
-          num_nodes_(0),
-          padded_veclen_(0),
-          workspace_offset_variance_(0),
-          workspace_offset_pivots_(0),
-          workspace_offset_dataset_(0),
-          node_index_ptr_(nullptr),
-          node_variance_ptr_(nullptr),
-          tree_pivots_ptr_(nullptr),
-          dataset_ptr_(nullptr)
+          CUDAIndex()
     {
     }
 
@@ -178,20 +166,7 @@ public:
         const IndexParams& params = KMeansCUDAIndexParams(),
         Distance d = Distance())
         : BaseClass(params, d),
-          CUDAIndex(),
-          gpu_initialized_(false),
-          gpu_search_ready_(false),
-          gpu_only_mode_(false),
-          num_nodes_(0),
-          leaf_count_(0),
-          padded_veclen_(0),
-          workspace_offset_variance_(0),
-          workspace_offset_pivots_(0),
-          workspace_offset_dataset_(0),
-          node_index_ptr_(nullptr),
-          node_variance_ptr_(nullptr),
-          tree_pivots_ptr_(nullptr),
-          dataset_ptr_(nullptr)
+          CUDAIndex()
     {
     }
 
@@ -205,20 +180,7 @@ public:
      */
     KMeansCUDAIndex(const KMeansIndex<Distance>& other)
         : BaseClass(other),
-          CUDAIndex(),
-          gpu_initialized_(false),
-          gpu_search_ready_(false),
-          gpu_only_mode_(false),
-          num_nodes_(0),
-          leaf_count_(0),
-          padded_veclen_(0),
-          workspace_offset_variance_(0),
-          workspace_offset_pivots_(0),
-          workspace_offset_dataset_(0),
-          node_index_ptr_(nullptr),
-          node_variance_ptr_(nullptr),
-          tree_pivots_ptr_(nullptr),
-          dataset_ptr_(nullptr)
+          CUDAIndex()
     {
         // CPU tree is copied via BaseClass copy constructor
         // GPU buffers will be allocated when buildCUDAKnnSearch() is called
@@ -231,20 +193,7 @@ public:
      * Call buildIndex() after copy to re-upload to GPU.
      */
     KMeansCUDAIndex(const KMeansCUDAIndex& other)
-        : BaseClass(other),
-          gpu_initialized_(false),
-          gpu_search_ready_(false),
-          gpu_only_mode_(false),
-          num_nodes_(0),
-          leaf_count_(0),
-          padded_veclen_(0),
-          workspace_offset_variance_(0),
-          workspace_offset_pivots_(0),
-          workspace_offset_dataset_(0),
-          node_index_ptr_(nullptr),
-          node_variance_ptr_(nullptr),
-          tree_pivots_ptr_(nullptr),
-          dataset_ptr_(nullptr)
+        : BaseClass(other)
     {
     }
 
@@ -318,6 +267,7 @@ public:
         std::swap(gpu_search_ready_, other.gpu_search_ready_);
         std::swap(gpu_only_mode_, other.gpu_only_mode_);
         std::swap(num_nodes_, other.num_nodes_);
+        std::swap(leaf_count_, other.leaf_count_);
         std::swap(padded_veclen_, other.padded_veclen_);
 
         // Swap GPU workspace and pointers
@@ -329,6 +279,10 @@ public:
         std::swap(node_variance_ptr_, other.node_variance_ptr_);
         std::swap(tree_pivots_ptr_, other.tree_pivots_ptr_);
         std::swap(dataset_ptr_, other.dataset_ptr_);
+        std::swap(tree_leaf_count_, other.tree_leaf_count_);
+        std::swap(cached_heap_size_, other.cached_heap_size_);
+        std::swap(cached_loc_size_, other.cached_loc_size_);
+        std::swap(cached_use_cooperative_, other.cached_use_cooperative_);
     }
 
     /**
@@ -427,6 +381,17 @@ public:
 
         // Prepare GPU (upload tree/dataset) - this is K-independent
         prepareGPUIndex();
+
+        // Cache kernel configuration for hot path
+        int max_checks = params.checks;
+        if (max_checks <= 0 || max_checks == FLANN_CHECKS_UNLIMITED) {
+            max_checks = 256;
+        }
+        cached_heap_size_ = calculateHeapSize(knn, max_checks);
+        cached_loc_size_ = getCUDALocSize(0);
+        bool heap_ok = (cached_heap_size_ <= cached_loc_size_);
+        bool branch_ok = (this->branching_ == 32 || this->branching_ == 64);
+        cached_use_cooperative_ = heap_ok && branch_ok;
     }
 
     /**
@@ -486,6 +451,15 @@ public:
             uploadToGPUInternal();
         }
         gpu_search_ready_ = true;
+
+        // Cache kernel config if not already set by buildCUDAKnnSearch
+        if (cached_heap_size_ == 0) {
+            cached_loc_size_ = getCUDALocSize(0);
+            bool branch_ok = (this->branching_ == 32 || this->branching_ == 64);
+            cached_use_cooperative_ = branch_ok;
+            // Default to max heap = loc_size (safe for any K <= loc_size)
+            cached_heap_size_ = cached_loc_size_;
+        }
     }
 
     /**
@@ -1202,12 +1176,6 @@ protected:
             throw FLANNException("Distances matrix too small");
         }
 
-        // Get search parameters
-        int max_checks = params.checks;
-        if (max_checks <= 0 || max_checks == FLANN_CHECKS_UNLIMITED) {
-            max_checks = 256;  // Default
-        }
-
         // Require contiguous queries (O(1) stride check instead of O(n) pointer loop)
         if (queries.stride != this->veclen_ * sizeof(ElementType)) {
             throw FLANNException(
@@ -1226,13 +1194,14 @@ protected:
             }
         }
 
-        // Upload queries to GPU using stream-ordered allocation
+        // Allocate per-search GPU buffers (freed at end of search)
         CUDABuffer<ElementType> queries_gpu(num_queries * padded_veclen_, stream);
+        CUDABuffer<int> indices_gpu(num_queries * knn, stream);
+        CUDABuffer<float> dists_gpu(num_queries * knn, stream);
+
         if (padded_veclen_ == this->veclen_) {
-            // Fast path: no padding needed, direct upload
             queries_gpu.upload(queries[0], num_queries * this->veclen_, stream);
         } else {
-            // Padding needed: upload raw then pad on GPU
             CUDABuffer<ElementType> raw_queries_gpu(num_queries * this->veclen_, stream);
             raw_queries_gpu.upload(queries[0], num_queries * this->veclen_, stream);
             if (!launch_pad_queries<ElementType>(
@@ -1247,28 +1216,10 @@ protected:
             raw_queries_gpu.freeAsync(stream);
         }
 
-        // Allocate result buffers on GPU using stream-ordered allocation
-        CUDABuffer<int> indices_gpu(num_queries * knn, stream);
-        CUDABuffer<float> dists_gpu(num_queries * knn, stream);
-
-        // Calculate grid/block dimensions
-        int threads_per_block = 128;
-        int num_blocks = (num_queries + threads_per_block - 1) / threads_per_block;
-        dim3 grid(num_blocks);
-        dim3 block(threads_per_block);
-
-        // Calculate dynamic heap size based on tree structure (OpenCL parity)
-        // heapSize = max(getAvgNodesNeeded(maxChecks), getCUDAknn(knn))
-        int heap_size = calculateHeapSize(knn, max_checks);
-
-        // Query device capabilities for cooperative kernel
-        int loc_size = getCUDALocSize(0);
-
-        // Determine which kernel to use
-        // Cooperative kernel requires heap_size <= loc_size AND branching=32 or 64
-        bool heap_ok = (heap_size <= loc_size);
-        bool branch_ok = (this->branching_ == 32 || this->branching_ == 64);
-        bool use_cooperative = heap_ok && branch_ok;
+        // Use cached kernel configuration from buildCUDAKnnSearch
+        int heap_size = cached_heap_size_;
+        int loc_size = cached_loc_size_;
+        bool use_cooperative = cached_use_cooperative_;
 
         // Launch kernel (only works with float, but must compile for all types)
         bool success = false;
@@ -1335,28 +1286,39 @@ protected:
         // Check for kernel launch errors (non-blocking)
         CUDA_CHECK_LAST();
 
-        // Download results using pinned memory for faster DMA transfers
-        PinnedBuffer<int> indices_host(num_queries * knn);
-        PinnedBuffer<float> dists_host(num_queries * knn);
+        // Check if output matrices are contiguous (stride == cols * sizeof(T))
+        bool indices_contiguous = (indices.stride == (size_t)knn * sizeof(int));
+        bool dists_contiguous = (dists.stride == (size_t)knn * sizeof(DistanceType));
 
-        // Async downloads (will wait for kernel on same stream)
-        indices_gpu.download(indices_host.get(), num_queries * knn, stream);
-        dists_gpu.download(dists_host.get(), num_queries * knn, stream);
+        if (indices_contiguous && dists_contiguous) {
+            // Fast path: download directly into output matrices (no staging buffer)
+            indices_gpu.download(indices[0], num_queries * knn, stream);
+            dists_gpu.download((float*)dists[0], num_queries * knn, stream);
 
-        // Stream-ordered free: queue deallocation before sync (NVIDIA recommended pattern)
-        queries_gpu.freeAsync(stream);
-        indices_gpu.freeAsync(stream);
-        dists_gpu.freeAsync(stream);
+            queries_gpu.freeAsync(stream);
+            indices_gpu.freeAsync(stream);
+            dists_gpu.freeAsync(stream);
 
-        // Single sync point - waits for kernel + downloads + frees
-        CUDA_CHECK(cudaStreamSynchronize(stream));
-        CUDA_CHECK_LAST();  // Check for any errors after sync
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            CUDA_CHECK_LAST();
+        } else {
+            // Slow path: staging buffer for non-contiguous output
+            PinnedBuffer<int> indices_host(num_queries * knn);
+            PinnedBuffer<float> dists_host(num_queries * knn);
 
-        // Copy to output matrices
-        for (size_t i = 0; i < num_queries; ++i) {
-            for (int j = 0; j < knn; ++j) {
-                indices[i][j] = indices_host[i * knn + j];
-                dists[i][j] = dists_host[i * knn + j];
+            indices_gpu.download(indices_host.get(), num_queries * knn, stream);
+            dists_gpu.download(dists_host.get(), num_queries * knn, stream);
+
+            queries_gpu.freeAsync(stream);
+            indices_gpu.freeAsync(stream);
+            dists_gpu.freeAsync(stream);
+
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            CUDA_CHECK_LAST();
+
+            for (size_t i = 0; i < num_queries; ++i) {
+                std::memcpy(indices[i], indices_host.get() + i * knn, knn * sizeof(int));
+                std::memcpy(dists[i], dists_host.get() + i * knn, knn * sizeof(float));
             }
         }
 
@@ -1389,6 +1351,8 @@ protected:
         gpu_initialized_ = false;
         gpu_search_ready_ = false;
         num_nodes_ = 0;
+        tree_leaf_count_ = 0;
+        cached_heap_size_ = 0;  // Force recomputation on next prepareGPUIndex
     }
 
     /**
@@ -1751,13 +1715,12 @@ protected:
             return maxChecks;
         }
 
-        // Count tree leaf nodes (not dataset points)
-        size_t tree_leaf_count = 0;
-        countTreeLeafNodes(this->root_, &tree_leaf_count);
+        // Use cached tree leaf count (computed during prepareGPUIndex)
+        if (tree_leaf_count_ == 0) {
+            countTreeLeafNodes(this->root_, &tree_leaf_count_);
+        }
 
-        // Formula: maxChecks * (tree_leaf_nodes) / (dataset_points)
-        // Matches OpenCL: maxChecks * (cl_num_nodes_ - cl_num_parents_) / cl_num_leaves_
-        return maxChecks * tree_leaf_count / leaf_count_;
+        return maxChecks * tree_leaf_count_ / leaf_count_;
     }
 
     /**
@@ -1795,16 +1758,17 @@ protected:
 
 private:
     // GPU state (mutable = implementation detail, not logical state)
-    mutable bool gpu_initialized_;
-    mutable bool gpu_search_ready_;
-    bool gpu_only_mode_;  // True if loaded with gpu_only=true (points_ not available)
+    mutable bool gpu_initialized_ = false;
+    mutable bool gpu_search_ready_ = false;
+    bool gpu_only_mode_ = false;
 
     // Note: Thread safety is now handled by rw_lock_ in base class CUDAIndex
     // (std::shared_mutex for reader-writer locking)
 
-    mutable size_t num_nodes_;
-    mutable size_t leaf_count_;      // Number of leaf nodes (for heap size calculation)
-    mutable size_t padded_veclen_;
+    mutable size_t num_nodes_ = 0;
+    mutable size_t leaf_count_ = 0;
+    mutable size_t tree_leaf_count_ = 0;
+    mutable size_t padded_veclen_ = 0;
 
     // GPU workspace buffer - single allocation for all GPU arrays
     // Contains: [node_index | node_variance | tree_pivots | dataset]
@@ -1812,15 +1776,20 @@ private:
     mutable CUDABuffer<unsigned char> workspace_gpu_;
 
     // Workspace layout offsets (bytes from workspace start)
-    mutable size_t workspace_offset_variance_;
-    mutable size_t workspace_offset_pivots_;
-    mutable size_t workspace_offset_dataset_;
+    mutable size_t workspace_offset_variance_ = 0;
+    mutable size_t workspace_offset_pivots_ = 0;
+    mutable size_t workspace_offset_dataset_ = 0;
 
     // Non-owning pointers into workspace (nullptr if workspace not allocated)
-    mutable int* node_index_ptr_;
-    mutable float* node_variance_ptr_;
-    mutable ElementType* tree_pivots_ptr_;
-    mutable ElementType* dataset_ptr_;
+    mutable int* node_index_ptr_ = nullptr;
+    mutable float* node_variance_ptr_ = nullptr;
+    mutable ElementType* tree_pivots_ptr_ = nullptr;
+    mutable ElementType* dataset_ptr_ = nullptr;
+
+    // Cached kernel configuration (computed in buildCUDAKnnSearch/prepareGPUIndex)
+    mutable int cached_heap_size_ = 0;
+    mutable int cached_loc_size_ = 128;
+    mutable bool cached_use_cooperative_ = false;
 };
 
 } // namespace cuda

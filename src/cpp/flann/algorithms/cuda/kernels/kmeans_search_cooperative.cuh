@@ -259,48 +259,25 @@ __device__ inline void find_new_node_dist(
     // ========================================================================
     int child_offset = tid % BRANCHING;
 
-    // heap_ids[loc_id] contains BASE OFFSET (first child BFS index)
-    // Add child_offset to get actual child node ID
-    int parent_ptr = (loc_id < N_HEAP) ? shared->heap_ids[loc_id] : -1;
-    int child_node_id = (parent_ptr >= 0 && parent_ptr < num_nodes) ?
-                        (parent_ptr + child_offset) : -1;
+    // OpenCL PARITY: single conditional for invalidation + distance + store
+    // nodeId = (locId < N_HEAP) ? (heapId[locId] + child_offset) : 0
+    int child_node_id = (loc_id < N_HEAP) ?
+                        (shared->heap_ids[loc_id] + child_offset) : 0;
 
     __syncthreads();
 
-    // ========================================================================
-    // Invalidate parent slots (OpenCL parity: now searches N_HEAP)
-    // ========================================================================
-    if (loc_id < N_HEAP && child_offset == 0) {
+    if (loc_id < N_HEAP) {
+        // Invalidate parent slot (all threads in group write same value — harmless)
         shared->heap_dists[loc_id] = FLT_MAX;
         shared->heap_ids[loc_id] = INT_MAX;
-    }
 
-    // ========================================================================
-    // OpenCL PARITY: Compute distance and store INDIRECT pointer
-    // ========================================================================
-    if (child_node_id >= 0 && child_node_id < num_nodes) {
-        // Load pivot for this child node
+        // Compute distance and store in upper half of heap
         const float* child_pivot = node_pivots + child_node_id * dim;
-
-        // Compute distance
-        float dist = compute_l2_distance(
-            shared->query,
-            child_pivot,
-            dim
-        );
-
-        // Apply CB_INDEX variance adjustment
+        float dist = compute_l2_distance(shared->query, child_pivot, dim);
         float adjusted_dist = dist - cb_index * node_variance[child_node_id];
 
-        // Store in upper half of heap
-        int heap_idx = LOC_SIZE + tid;
-        if (heap_idx < N_HEAP) {
-            shared->heap_dists[heap_idx] = adjusted_dist;
-
-            // CRITICAL: Store INDIRECT POINTER from nodeIndex, not direct node ID
-            // This is what enables the OpenCL parity architecture
-            shared->heap_ids[heap_idx] = node_index[child_node_id];
-        }
+        shared->heap_dists[LOC_SIZE + tid] = adjusted_dist;
+        shared->heap_ids[LOC_SIZE + tid] = node_index[child_node_id];
     }
 }
 

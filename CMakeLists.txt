@@ -254,7 +254,7 @@ if (BUILD_CUDA_LIB)
         # cmake/flann_utils.cmake to avoid polluting non-CUDA targets (like OpenCL tests)
 
         # Find CUDA Toolkit (for cudart, etc.)
-        find_package(CUDAToolkit 11.0)
+        find_package(CUDAToolkit 11.2)
         if (CUDAToolkit_FOUND)
             message(STATUS "CUDA Toolkit ${CUDAToolkit_VERSION} found")
         else()

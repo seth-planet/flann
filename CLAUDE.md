@@ -133,7 +133,7 @@ flann::Index<L2<float>> index(empty, SavedIndexParams("output.gpu.idx"));
 
 ## Dependencies
 
-**Required:** C++ compiler, CMake >= 2.6
+**Required:** C++ compiler, CMake >= 3.20
 
 **Optional:**
 - GTest - C++ tests

@@ -95,6 +95,7 @@ macro(flann_add_cuda_gtest exe src)
     target_link_libraries(${exe} ${googletest_LIBRARIES} CUDA::cudart ${ARGN})
     target_compile_definitions(${exe} PRIVATE FLANN_USE_CUDA)
     add_dependencies(${exe} googletest)
+    add_dependencies(flann_gtests ${exe})
 
     # add target for running test
     string(REPLACE "/" "_" _testname ${exe})
