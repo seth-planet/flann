@@ -655,8 +655,8 @@ public:
         CUDABuffer<ElementType> padded_queries;
 
         if (padded_veclen_ != this->veclen_) {
-            // Allocate and pad queries on GPU
-            padded_queries = CUDABuffer<ElementType>(num_queries * padded_veclen_);
+            // Stream-ordered allocation preserves the non-blocking contract.
+            padded_queries = CUDABuffer<ElementType>(num_queries * padded_veclen_, exec_stream);
             if (!launch_pad_queries<ElementType>(
                     d_queries,
                     padded_queries.get(),
@@ -729,7 +729,10 @@ public:
         // 11. Check for kernel launch errors (non-blocking)
         CUDA_CHECK_LAST();
 
-        // 12. No synchronization - caller is responsible for stream sync
+        // 12. Stream-ordered release of the padding buffer (no-op if unused).
+        padded_queries.freeAsync(exec_stream);
+
+        // 13. No synchronization - caller is responsible for stream sync
         return static_cast<int>(num_queries);
     }
 
@@ -881,7 +884,11 @@ public:
             }
             return knnSearchGPU(queries, indices, dists, knn, params);
         }
-        // GPU not ready - use CPU
+        if (gpu_only_mode_) {
+            throw FLANNException(
+                "knnSearch called on a GPU-only index that is not search-ready. "
+                "Call buildCUDAKnnSearch() or prepareGPUIndex() after loading.");
+        }
         return BaseClass::knnSearch(queries, indices, dists, knn, params);
     }
 
@@ -913,7 +920,11 @@ public:
             }
             return knnSearchGPU(queries, indices, dists, (int)knn, params);
         }
-        // GPU not ready - use CPU
+        if (gpu_only_mode_) {
+            throw FLANNException(
+                "knnSearch called on a GPU-only index that is not search-ready. "
+                "Call buildCUDAKnnSearch() or prepareGPUIndex() after loading.");
+        }
         return BaseClass::knnSearch(queries, indices, dists, knn, params);
     }
 
@@ -1093,6 +1104,9 @@ protected:
         this->index_params_["cb_index"] = this->cb_index_;
 
         gpu_initialized_ = true;
+
+        // Auto-arm GPU search after v2.0 load (data already on GPU, near-zero cost).
+        prepareGPUIndex();
     }
 
     /**

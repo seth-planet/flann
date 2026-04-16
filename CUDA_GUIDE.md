@@ -310,8 +310,8 @@ FLANN provides a GPU-optimized index format (v2.0) that dramatically reduces col
 flann::Matrix<float> empty;
 flann::Index<flann::L2<float>> index(empty, flann::SavedIndexParams("index.gpu.idx"));
 
-// GPU setup is much faster for v2.0 format (~1ms vs ~150ms)
-index.buildCUDAKnnSearch(10, flann::SearchParams(128));
+// GPU v2.0 indices are immediately search-ready after load.
+// buildCUDAKnnSearch() is optional — call it only to tune the kernel cache for a specific K.
 
 // Search normally
 index.knnSearch(queries, indices, distances, k, params);
@@ -349,9 +349,9 @@ index.save("model.idx");
 flann::Matrix<float> empty_data;
 flann::Index<flann::L2<float>> index(empty_data, flann::SavedIndexParams("model.idx"));
 
-// CRITICAL: Always call buildCUDAKnnSearch() after loading
-// - For CPU format: uploads tree to GPU (~200-500ms)
-// - For GPU format: minimal overhead (CUDA kernels are pre-compiled)
+// For CPU v1.1 format: buildCUDAKnnSearch() is REQUIRED — it uploads the tree to GPU (~200-500ms).
+// For GPU v2.0 format: the index is already search-ready after load; buildCUDAKnnSearch()
+//                      is OPTIONAL (tunes the kernel cache for a specific K).
 index.buildCUDAKnnSearch(k, flann::SearchParams(checks));
 
 // Now search works
@@ -379,7 +379,7 @@ index.buildCUDAKnnSearch(k, flann::SearchParams(2000));
 
 | File Signature | Index Type | After Load |
 |----------------|------------|------------|
-| `FLANN_GPU_INDEX_v2.0` | Any | GPU data already uploaded |
+| `FLANN_GPU_INDEX_v2.0` | Any | GPU data already uploaded; index is immediately search-ready |
 | `FLANN_INDEX_v1.1` | HIERARCHICAL/KMEANS | Tree loaded via copy, needs GPU upload |
 | `FLANN_INDEX_v1.1` | HIERARCHICAL_CUDA/KMEANS_CUDA | Tree loaded directly, needs GPU upload |
 

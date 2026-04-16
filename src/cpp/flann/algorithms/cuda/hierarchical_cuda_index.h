@@ -611,10 +611,13 @@ public:
     {
         if (gpu_search_ready_) {
             return knnSearchGPU(queries, indices, dists, knn, params);
-        } else {
-            // Fallback to CPU search
-            return BaseClass::knnSearch(queries, indices, dists, knn, params);
         }
+        if (gpu_only_mode_) {
+            throw FLANNException(
+                "knnSearch called on a GPU-only index that is not search-ready. "
+                "Call buildCUDAKnnSearch() or prepareGPUIndex() after loading.");
+        }
+        return BaseClass::knnSearch(queries, indices, dists, knn, params);
     }
 
     /**
@@ -651,9 +654,13 @@ public:
             }
 
             return result;
-        } else {
-            return BaseClass::knnSearch(queries, indices, dists, knn, params);
         }
+        if (gpu_only_mode_) {
+            throw FLANNException(
+                "knnSearch called on a GPU-only index that is not search-ready. "
+                "Call buildCUDAKnnSearch() or prepareGPUIndex() after loading.");
+        }
+        return BaseClass::knnSearch(queries, indices, dists, knn, params);
     }
 
     /**
@@ -724,8 +731,8 @@ public:
         CUDABuffer<ElementType> padded_queries;
 
         if ((size_t)padded_bytes != this->veclen_) {
-            // Allocate and pad queries on GPU
-            padded_queries = CUDABuffer<ElementType>(num_queries * padded_bytes);
+            // Stream-ordered allocation preserves the non-blocking contract.
+            padded_queries = CUDABuffer<ElementType>(num_queries * padded_bytes, exec_stream);
             if (!launch_pad_queries<ElementType>(
                     d_queries,
                     padded_queries.get(),
@@ -762,7 +769,10 @@ public:
         // 9. Check for kernel launch errors (non-blocking)
         CUDA_CHECK_LAST();
 
-        // 10. No synchronization - caller is responsible for stream sync
+        // 10. Stream-ordered release of the padding buffer (no-op if unused).
+        padded_queries.freeAsync(exec_stream);
+
+        // 11. No synchronization - caller is responsible for stream sync
         return static_cast<int>(num_queries);
     }
 
@@ -963,6 +973,9 @@ protected:
         this->index_params_["centers_init"] = this->centers_init_;
 
         gpu_initialized_ = true;
+
+        // Auto-arm GPU search after v2.0 load (data already on GPU, near-zero cost).
+        prepareGPUIndex();
     }
 
     /**

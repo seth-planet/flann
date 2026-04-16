@@ -1946,6 +1946,110 @@ TEST_F(KMeansCUDA_SIFT10K, TestConcurrentStreamOverloads)
     }
 }
 
+/**
+ * Regression test for Issue 1: knnSearchGPUDirect padding path must be stream-async.
+ *
+ * Exercises the `padded_veclen_ != veclen_` branch with a non-aligned veclen (129).
+ * Historically this branch allocated the padding buffer with sync cudaMalloc/cudaFree,
+ * silently violating the documented non-blocking contract. Now the allocation is
+ * stream-ordered (cudaMallocAsync + freeAsync).
+ */
+TEST(KMeansCUDA_NonAligned, TestGPUDirectNonAlignedVeclenAsync)
+{
+    const size_t N = 2000, Q = 200, D = 129;  // D % 4 != 0 forces the padding path
+    const size_t k = 10;
+
+    flann::seed_random(42);
+    std::vector<float> dataset_h(N * D), query_h(Q * D);
+    for (size_t i = 0; i < dataset_h.size(); ++i) dataset_h[i] = (float)rand() / RAND_MAX;
+    for (size_t i = 0; i < query_h.size(); ++i)   query_h[i]   = (float)rand() / RAND_MAX;
+
+    flann::Matrix<float> data(dataset_h.data(), N, D);
+    flann::Index<flann::L2<float>> index(data,
+        flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+    index.buildIndex();
+    index.prepareGPUIndex();
+    ASSERT_TRUE(index.isGPUSearchReady());
+
+    float* d_queries = nullptr; int* d_indices = nullptr; float* d_dists = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_queries, Q * D * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_indices, Q * k * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_dists,   Q * k * sizeof(float)));
+
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    CUDA_CHECK(cudaMemcpyAsync(d_queries, query_h.data(), Q * D * sizeof(float),
+                               cudaMemcpyHostToDevice, stream));
+
+    int result = index.knnSearchGPUDirect(d_queries, d_indices, d_dists, Q, k,
+                                          flann::SearchParams(128), stream);
+    EXPECT_EQ(result, (int)Q);
+
+    // The call must not have synchronized. cudaStreamQuery can race-win on very fast
+    // GPUs, so this is logged rather than asserted hard.
+    cudaError_t q = cudaStreamQuery(stream);
+    printf("TestGPUDirectNonAlignedVeclenAsync: stream state after call = %s\n",
+           q == cudaSuccess ? "cudaSuccess (work finished, OK)" :
+           q == cudaErrorNotReady ? "cudaErrorNotReady (async, expected)" :
+           cudaGetErrorString(q));
+
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    std::vector<int> h_indices(Q * k);
+    std::vector<float> h_dists(Q * k);
+    CUDA_CHECK(cudaMemcpy(h_indices.data(), d_indices, Q * k * sizeof(int), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_dists.data(),   d_dists,   Q * k * sizeof(float), cudaMemcpyDeviceToHost));
+
+    for (size_t i = 0; i < Q; ++i) {
+        for (size_t j = 0; j < k; ++j) {
+            EXPECT_GE(h_indices[i * k + j], 0);
+            EXPECT_LT(h_indices[i * k + j], (int)N);
+            EXPECT_GE(h_dists[i * k + j], 0.0f);
+        }
+    }
+
+    cudaStreamDestroy(stream);
+    cudaFree(d_queries); cudaFree(d_indices); cudaFree(d_dists);
+}
+
+/**
+ * Regression test for Issue 2: loading a GPU v2.0 index must leave the index
+ * immediately search-ready without an explicit buildCUDAKnnSearch() call.
+ */
+TEST_F(KMeansCUDA_SIFT10K, TestGPUV2LoadSearchReadyWithoutBuildCUDA)
+{
+    const char* filename = "test_kmeans_v2_autoarm.idx";
+    remove(filename);
+    flann::seed_random(0);
+
+    // Build + save a GPU v2.0 index.
+    {
+        flann::Index<flann::L2<float>> idx(data,
+            flann::KMeansCUDAIndexParams(32, 11, FLANN_CENTERS_RANDOM, 0.2));
+        idx.buildIndex();
+        idx.buildCUDAKnnSearch(knn, flann::SearchParams(128));
+        ASSERT_TRUE(idx.hasGPUFormat());
+        idx.save(filename);
+    }
+
+    // Load — do NOT call buildCUDAKnnSearch. Index must be immediately search-ready.
+    flann::Index<flann::L2<float>> loaded(data, flann::SavedIndexParams(filename));
+    EXPECT_TRUE(loaded.isGPUSearchReady())
+        << "GPU v2.0 load must auto-arm GPU search (no buildCUDAKnnSearch call made)";
+
+    std::vector<size_t> idx_buf(query.rows * knn);
+    std::vector<float>  dist_buf(query.rows * knn);
+    flann::Matrix<size_t> idx_out(idx_buf.data(), query.rows, knn);
+    flann::Matrix<float>  dist_out(dist_buf.data(), query.rows, knn);
+    EXPECT_NO_THROW(loaded.knnSearch(query, idx_out, dist_out, knn, flann::SearchParams(128)));
+
+    float precision = compute_precision(gt_indices, idx_out);
+    printf("TestGPUV2LoadSearchReadyWithoutBuildCUDA precision: %.2f%%\n", precision * 100);
+    EXPECT_GE(precision, 0.90f);
+
+    remove(filename);
+}
+
 int main(int argc, char** argv)
 {
     testing::InitGoogleTest(&argc, argv);
