@@ -52,13 +52,14 @@ __device__ inline void bitonic_merge(
         int valA = heap_ids[pos];
         int valB = heap_ids[pos + stride];
 
-        // Match OpenCL behavior: simple comparison without tie-breaking
-        // OpenCL: if ((keyA < keyB) == dir) { swap }
-        // Note: valA, valB loaded but not used for tie-breaking (matches OpenCL)
-        (void)valA;  // Suppress unused variable warning
-        (void)valB;
+        // Deterministic total order: break distance ties by point id (valA/valB). The cooperative
+        // search fills heap slots via atomicAdd, so equal-distance points land in nondeterministic
+        // slot order; a distance-only compare then leaves the top-k nondeterministic run-to-run.
+        // Distinct points have distinct ids, so (dist, id) is a strict total order -> bitonic sort
+        // yields a unique result independent of input slot order (FLANN GPU determinism fix).
+        bool a_before_b = (keyA < keyB) || (keyA == keyB && valA < valB);
 
-        if ((keyA < keyB) == dir) {
+        if (a_before_b == dir) {
             // Swap distances
             heap_dists[pos] = keyB;
             heap_dists[pos + stride] = keyA;
