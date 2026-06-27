@@ -126,6 +126,19 @@ if (HDF5_FOUND)
         target_compile_options(flann_gpu_pipeline_equivalence_test PRIVATE -O3 -march=native)
         install(TARGETS flann_gpu_pipeline_equivalence_test DESTINATION bin)
         message(STATUS "Building flann_gpu_pipeline_equivalence_test")
+
+        # CUDA search performance benchmark
+        add_executable(benchmark_cuda_search benchmark_cuda_search.cpp)
+        target_include_directories(benchmark_cuda_search PRIVATE ${HDF5_INCLUDE_DIR})
+        target_compile_definitions(benchmark_cuda_search PRIVATE FLANN_USE_CUDA)
+        target_include_directories(benchmark_cuda_search PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+        target_link_libraries(benchmark_cuda_search
+            ${LZ4_LINK_LIBRARIES}
+            flann_cuda
+            ${TEST_LIBRARIES}
+            CUDA::cudart)
+        target_compile_options(benchmark_cuda_search PRIVATE -O3 -march=native)
+        message(STATUS "Building benchmark_cuda_search")
     endif()
 endif()
 

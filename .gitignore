@@ -27,3 +27,4 @@ Testing/
 benchmark_results/
 cuda_migration_plan/
 test_saved_index.idx
+autoresearch-results.tsv
