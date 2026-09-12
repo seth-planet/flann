@@ -6,6 +6,14 @@ add_dependencies(tests flann_gtests)
 
 set(EXECUTABLE_OUTPUT_PATH ${TEST_OUTPUT_PATH})
 
+# Outside the HDF5 and CUDA blocks on purpose: the search-width bounds are pure host
+# code, and a test gated on an optional dependency does not run on the builds that
+# have neither.
+flann_add_gtest(flann_search_width_test flann_search_width_test.cpp)
+# It links no flann library -- the header is self-contained -- so it carries its own
+# include path rather than inheriting one.
+target_include_directories(flann_search_width_test PRIVATE ${PROJECT_SOURCE_DIR}/src/cpp)
+
 if (HDF5_FOUND)
     include_directories(${HDF5_INCLUDE_DIR})
 

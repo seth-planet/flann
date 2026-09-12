@@ -11,6 +11,7 @@ test/*.idx
 test/*.dat
 test/*.bz2
 test/flann_multithreaded_test
+test/flann_search_width_test
 test/flann_simple_test
 test/flann_uint_autotune.py
 build
