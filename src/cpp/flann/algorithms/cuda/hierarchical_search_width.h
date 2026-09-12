@@ -78,9 +78,13 @@ static const int kDefaultSearchWidth = 128;
  *   those trees are never descended -- fewer candidates, no error. Unreachable while
  *   branching (32) exceeds the tree count (4), and checked because the floor is
  *   max(branching, k, num_trees) rather than any one of them.
- * - A non-power-of-two sorts wrong rather than failing: bitonic_merge steps
- *   `stride >>= 1` from size/2 over a heap of local_size*2, and a bitonic network only
- *   sorts when its width is a power of two.
+ * - A non-power-of-two HANGS, which is the second hang mode rather than a sorting one.
+ *   sort_heap doubles `size` from 2 while `size < heap_size`, so a heap whose width is not
+ *   a power of two is never reached by the doubling loop; bitonic_merge then partners with
+ *   `local_id & (stride - 1)` over a sequence that was never made bitonic, and `pos +
+ *   stride` runs past heap_dists into the heap_ids half of the same shared allocation --
+ *   in range of the allocation, so no fault to report. Measured by removing this check and
+ *   launching width 100: 100% GPU utilisation, no progress, killed at 150 s.
  * - Above the device limit the launch fails, which reads as a driver problem rather
  *   than as the configuration mistake it is. 1024 is admitted: measured on a T4 at
  *   464.5 ms against 37.9 at 128, returning the true neighbour for 8000 of 8000 queries.
