@@ -321,6 +321,10 @@ public:
      * constructors, and would let a caller change a result that a memoizing layer keyed
      * on the call arguments had already cached.
      *
+     * CALL IT UNDER rw_lock_. It reads gpu_num_trees_ and branching_, which addPoints and
+     * removePoint rewrite under the exclusive lock, and the width it returns is validated
+     * against the tree count the launch will then use.
+     *
      * @param params Search parameters; cuda_search_width 0 means this index's default
      * @param knn    Neighbours requested, which the k bound needs
      * @return the width to launch at
@@ -775,9 +779,6 @@ public:
                 "Use a supported k value or fall back to CPU search.");
         }
 
-        // 2b. Before any allocation, so a refused width has nothing to unwind.
-        const int search_width = resolveSearchWidth(params, knn);
-
         // 3. Handle zero queries
         if (num_queries == 0) {
             return 0;
@@ -790,6 +791,13 @@ public:
 
         // 5. Thread safety - acquire shared lock for concurrent searches
         std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
+
+        // 5b. UNDER THE LOCK, because it reads gpu_num_trees_ and branching_, which
+        // addPoints and removePoint mutate under the exclusive lock -- freeGPUMemory zeroes
+        // the tree count, so a width resolved outside the lock can clear the num_trees bound
+        // against 0 and then launch against the new count, which is the silent case that
+        // bound exists to refuse. Still before any allocation: the first one is step 7.
+        const int search_width = resolveSearchWidth(params, knn);
 
         // 6. Use caller-provided stream
         cudaStream_t exec_stream = stream;
@@ -1399,11 +1407,14 @@ public:
         }
 
         requireHammingElementType();
-        const int search_width = resolveSearchWidth(params, knn);
 
         // Acquire shared lock - allows multiple concurrent searches
         // Mutations (addPoints, removePoint) acquire exclusive lock and wait for searches to complete
         std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
+
+        // Under the lock, for the reason the device-pointer overload gives: the width is
+        // resolved against gpu_num_trees_ and branching_, which the mutators rewrite.
+        const int search_width = resolveSearchWidth(params, knn);
 
         size_t num_queries = queries.rows;
 
