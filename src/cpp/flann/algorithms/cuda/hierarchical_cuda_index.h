@@ -332,7 +332,7 @@ public:
             ? kDefaultSearchWidth
             : params.cuda_search_width;
         const char* reason = hierarchical_search_width_error(
-            width, static_cast<int>(knn), this->branching_);
+            width, static_cast<int>(knn), this->branching_, gpu_num_trees_);
         if (reason != nullptr) {
             throw FLANNException(
                 "SearchParams::cuda_search_width " + std::to_string(width) + " cannot be "
@@ -775,8 +775,7 @@ public:
                 "Use a supported k value or fall back to CPU search.");
         }
 
-        // 2b. Resolve and validate the search width before any allocation, so a refused
-        // width costs nothing and has nothing to unwind.
+        // 2b. Before any allocation, so a refused width has nothing to unwind.
         const int search_width = resolveSearchWidth(params, knn);
 
         // 3. Handle zero queries
@@ -834,7 +833,8 @@ public:
         );
 
         if (!success) {
-            throw FLANNException("Kernel launch failed for k=" + std::to_string(knn));
+            throw FLANNException("Kernel launch failed for k=" + std::to_string(knn) +
+                                 " at search width " + std::to_string(search_width));
         }
 
         // 9. Check for kernel launch errors (non-blocking)
@@ -1493,7 +1493,8 @@ public:
         );
 
         if (!success) {
-            throw FLANNException("Unsupported k value for GPU search");
+            throw FLANNException("Kernel launch failed for k=" + std::to_string(knn) +
+                                 " at search width " + std::to_string(search_width));
         }
 
         // Check for kernel launch errors (non-blocking)

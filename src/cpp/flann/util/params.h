@@ -84,9 +84,11 @@ struct SearchParams
     int cores;
     // for GPU search indicates if matrices are already in GPU ram
     bool matrices_in_gpu_ram;
-    // block width the cooperative CUDA kernels search at -- their search-effort dial, the
-    // CUDA counterpart of `checks` (0 = the index's default). See
-    // algorithms/cuda/hierarchical_search_width.h. Ignored by the CPU indices.
+    // Block width HierarchicalCUDAIndex's cooperative kernel searches at: its search-effort
+    // dial, and the only reader of this field (0 = that index's default). See
+    // algorithms/cuda/hierarchical_search_width.h. Every other index ignores it,
+    // KMeansCUDAIndex included -- that one takes its cooperative width from
+    // cuda_utils.h's getCUDALocSize and reads `checks` instead.
     int cuda_search_width;
 };
 

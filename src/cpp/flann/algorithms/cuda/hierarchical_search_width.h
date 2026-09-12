@@ -40,12 +40,6 @@
  * kernels/hierarchical_search_cooperative.cuh defines it and is compiled by nvcc, and the
  * nvcc translation unit includes neither the index header nor cuda_utils.h.
  *
- * Separate from cuda_utils.h's getCUDALocSize, which is the kmeans cooperative kernel's
- * width and returns the same 128. Sharing one value between the two kernels is what put
- * this one here: the hierarchical launch site carried the comment "LOC_SIZE=128 matches
- * K-Means CUDA kernel for consistency (97.4% precision)", and that 97.4% is a kmeans
- * measurement. The two kernels have different heaps, different barrier counts and
- * different bounds, so they get separate dials.
  */
 
 namespace flann {
@@ -53,14 +47,18 @@ namespace cuda {
 
 /// Block width the search runs at when a caller states no preference.
 ///
-/// The OpenCL implementation this kernel was translated from carried FLANN's
+/// 128 is the width the CUDA port inherited by copying a sibling kmeans kernel's value,
+/// and it is the default so a caller who states no width searches at the width every
+/// pipeline measurement was taken at. SearchParams::checks is accepted and ignored on
+/// this path; cuda_utils.h's getCUDALocSize is the kmeans width and returns the same 128,
+/// and the 97.4% precision figure recorded beside it is a kmeans measurement.
+///
+/// The OpenCL implementation this kernel was translated from carries FLANN's
 /// SearchParams(checks) accuracy/speed dial in its workgroup size, under the name
-/// LOC_SIZE -- "avg checks per node needed for MAX_CHECKS", whose only stated lower
-/// bound was LOC_SIZE >= the neighbour count. The CUDA port set the width to match a
-/// sibling kmeans kernel and dropped the connection, so the dial became unreachable
-/// and SearchParams::checks has been accepted and ignored since. 128 is that inherited
-/// value, kept as the default so a caller who states no width gets the same neighbours
-/// as before.
+/// LOC_SIZE -- "avg checks per node needed for MAX_CHECKS", whose only stated lower bound
+/// is LOC_SIZE >= the neighbour count. Two kernels with different heaps, different barrier
+/// counts and different bounds need separate dials, which is why this one is not
+/// getCUDALocSize.
 static const int kDefaultSearchWidth = 128;
 
 /**
@@ -75,6 +73,11 @@ static const int kDefaultSearchWidth = 128;
  * - Below @p k, store_results' duplicate scan probes with heap_ids[local_id] over
  *   thread ids alone, so heap entries past the width are never used as a probe and
  *   duplicates from the overlapping trees survive into the returned neighbours.
+ * - Below @p num_trees, find_nodes_cooperative seeds one root per thread under
+ *   `if (local_id < num_trees)`, so the roots past the width never enter the heap and
+ *   those trees are never descended -- fewer candidates, no error. Unreachable while
+ *   branching (32) exceeds the tree count (4), and checked because the floor is
+ *   max(branching, k, num_trees) rather than any one of them.
  * - A non-power-of-two sorts wrong rather than failing: bitonic_merge steps
  *   `stride >>= 1` from size/2 over a heap of local_size*2, and a bitonic network only
  *   sorts when its width is a power of two.
@@ -88,9 +91,11 @@ static const int kDefaultSearchWidth = 128;
  * @param local_size Requested block width
  * @param k          Neighbours the caller asked for
  * @param branching  Branching factor of the index being searched
+ * @param num_trees  Trees in the index, which the root seeding needs a thread each for
  * @return nullptr when the width is usable, otherwise a literal naming the bound it broke
  */
-inline const char* hierarchical_search_width_error(int local_size, int k, int branching)
+inline const char* hierarchical_search_width_error(int local_size, int k, int branching,
+                                                   int num_trees)
 {
     if (local_size <= 0) {
         return "search width must be positive";
@@ -106,6 +111,10 @@ inline const char* hierarchical_search_width_error(int local_size, int k, int br
     }
     if (local_size < k) {
         return "search width is below k (duplicate neighbours would survive the scan)";
+    }
+    if (local_size < num_trees) {
+        return "search width is below the index's tree count (trees past the width are "
+               "never descended)";
     }
     return nullptr;
 }

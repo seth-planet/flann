@@ -466,7 +466,8 @@ __global__ void hierarchical_search_cooperative_kernel(
     // threadIdx.x = local thread ID within block
     int query_id = blockIdx.x;
     int local_id = threadIdx.x;
-    int local_size = blockDim.x;  // the search width the launch was configured with
+    int local_size = blockDim.x;  // bounds enforced before launch; see
+                                  // hierarchical_search_width_error
 
     if (query_id >= num_queries) return;
 
@@ -528,7 +529,8 @@ __global__ void hierarchical_search_cooperative_kernel(
  * @param num_trees Number of parallel trees
  * @param branching Branching factor
  * @param local_size Block width to search at -- FLANN's search-effort dial. See
- *        kDefaultSearchWidth; validated by hierarchical_search_width_error.
+ *        kDefaultSearchWidth. Refused, not clamped: hierarchical_search_width_error
+ *        names the bounds and why each is silent.
  * @param stream CUDA stream for concurrent execution (nullptr = default stream)
  * @return true if the kernel launched, false for an unsupported k or an unusable width
  */
@@ -548,13 +550,12 @@ bool launch_hierarchical_search_cooperative(
     int local_size,
     cudaStream_t stream
 ) {
-    // Refuse rather than clamp: every bound this checks fails silently or hangs, and a
-    // clamped width would return neighbours for a search the caller did not ask for.
-    const char* width_error = hierarchical_search_width_error(local_size, k, branching);
-    if (width_error != nullptr) {
-        fprintf(stderr,
-                "FLANN hierarchical cooperative search: %s (width %d, k %d, branching %d)\n",
-                width_error, local_size, k, branching);
+    // A width below `branching` hangs the kernel and a non-power-of-two returns an
+    // unsorted heap, so this refuses rather than clamps -- a clamp would answer a search
+    // the caller did not ask for. Callers inside this library reach the same predicate
+    // through HierarchicalCUDAIndex::resolveSearchWidth, which throws the reason; this is
+    // the backstop for a caller of this function, which the header declares.
+    if (hierarchical_search_width_error(local_size, k, branching, num_trees) != nullptr) {
         return false;
     }
 
@@ -685,7 +686,8 @@ bool launch_hierarchical_search_cooperative(
             "Recommendation: Use k that is multiple of 4 for best performance.\n"
             "                Multiple of 16 is optimal (vectorized + cache-aligned).\n"
             "\n"
-            "To add custom k: edit hierarchical_search_cooperative.cuh line ~548\n",
+            "To add custom k: add a branch to the dispatch in "
+                "launch_hierarchical_search_cooperative\n",
             k);
         return false;
     }
