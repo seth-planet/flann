@@ -555,7 +555,16 @@ bool launch_hierarchical_search_cooperative(
     // the caller did not ask for. Callers inside this library reach the same predicate
     // through HierarchicalCUDAIndex::resolveSearchWidth, which throws the reason; this is
     // the backstop for a caller of this function, which the header declares.
-    if (hierarchical_search_width_error(local_size, k, branching, num_trees) != nullptr) {
+    const char* width_error =
+        hierarchical_search_width_error(local_size, k, branching, num_trees);
+    if (width_error != nullptr) {
+        // Say why, as the unsupported-k branch below does. A caller reaching this function
+        // directly has no other channel: the index wraps the same predicate in a thrown
+        // message, and a bare false here is indistinguishable from a launch failure.
+        fprintf(stderr,
+                "CUDA Error: search width %d cannot run this kernel: %s "
+                "(k=%d, branching=%d, trees=%d)\n",
+                local_size, width_error, k, branching, num_trees);
         return false;
     }
 

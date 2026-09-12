@@ -66,6 +66,15 @@ TEST(SearchWidth, RefusesAWidthTheTreeWalkCannotUse)
                       "below the index's branching"));
 
     EXPECT_TRUE(Names(hierarchical_search_width_error(128, 16, 48, 4), "not a multiple"));
+    // A second width, because one point lets a bound narrowed to `width >= 128 && ...`
+    // through: 64 with branching 48 leaves 16, and is the silent-wrong shape the bound
+    // exists for. It takes a branching that is not a power of two to reach this at all --
+    // a power-of-two branching no larger than a power-of-two width always divides it.
+    EXPECT_TRUE(Names(hierarchical_search_width_error(64, 16, 48, 4), "not a multiple"));
+    // A negative branching divides evenly whenever its magnitude does, so -32 at width 128
+    // clears both the below-branching and the multiple-of bound; only this guard stops it.
+    EXPECT_TRUE(Names(hierarchical_search_width_error(128, 16, -32, 4),
+                      "branching factor is not positive"));
 
     EXPECT_TRUE(Names(hierarchical_search_width_error(128, 16, 0, 4),
                       "branching factor is not positive"));

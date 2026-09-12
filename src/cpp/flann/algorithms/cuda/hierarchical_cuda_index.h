@@ -332,15 +332,20 @@ public:
      */
     int resolveSearchWidth(const SearchParams& params, size_t knn) const
     {
-        const int width = params.cuda_search_width == 0
-            ? kDefaultSearchWidth
-            : params.cuda_search_width;
+        const bool defaulted = params.cuda_search_width == 0;
+        const int width = defaulted ? kDefaultSearchWidth : params.cuda_search_width;
         const char* reason = hierarchical_search_width_error(
             width, static_cast<int>(knn), this->branching_, gpu_num_trees_);
         if (reason != nullptr) {
+            // Name the width's source. A caller who set nothing is told their
+            // SearchParams::cuda_search_width is wrong, goes looking for the value in
+            // their own code, and does not find it -- the bound they broke is the
+            // index's, which the branching in the message is there to show.
             throw FLANNException(
-                "SearchParams::cuda_search_width " + std::to_string(width) + " cannot be "
-                "used for this search: " + reason + " (k=" + std::to_string(knn) +
+                (defaulted ? std::string("this index's default search width ")
+                           : std::string("SearchParams::cuda_search_width ")) +
+                std::to_string(width) + " cannot be used for this search: " + reason +
+                " (k=" + std::to_string(knn) +
                 ", branching=" + std::to_string(this->branching_) + ")");
         }
         return width;
@@ -777,36 +782,41 @@ public:
                 "Use a supported k value or fall back to CPU search.");
         }
 
-        // 2. Handle zero queries
-        if (num_queries == 0) {
-            return 0;
-        }
-
-        // 3. Validate output pointers
+        // 2. Validate output pointers
         if (d_indices == nullptr || d_dists == nullptr) {
             throw FLANNException("Output pointers d_indices and d_dists cannot be null");
         }
 
-        // 4. Thread safety - acquire shared lock for concurrent searches
+        // 3. Thread safety - acquire shared lock for concurrent searches
         std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
 
-        // 5. UNDER THE LOCK, both of them: this is the whole snapshot the launch runs
-        // against. addPoints and removePoint call freeGPUMemory holding the exclusive
-        // lock, and it nulls dataset_ptr_ and node_index_ptr_, zeroes gpu_num_trees_ and
-        // clears gpu_initialized_. A readiness check made before the lock can therefore
-        // be true, block here, and go on to launch against freed device pointers; a width
-        // resolved before the lock can clear the num_trees bound against a tree count of
-        // 0 and then launch against the restored count, which is the silent case that
-        // bound exists to refuse.
+        // 4. UNDER THE LOCK, all of it: this is the whole snapshot the LAUNCH runs
+        // against -- the lock is released at return while the kernel is still in flight,
+        // so it covers the launch and not the kernel's lifetime. addPoints and
+        // removePoint are the writers that take the exclusive lock; each calls
+        // freeGPUMemory, which nulls dataset_ptr_ and node_index_ptr_, zeroes
+        // gpu_num_trees_ and clears gpu_initialized_. A readiness check made before the
+        // lock can therefore be true, block here, and go on to launch against freed
+        // device pointers; a width resolved before the lock can clear the num_trees bound
+        // against a tree count of 0 and then launch against the restored count, which is
+        // the silent case that bound exists to refuse. loadIndex, loadIndexV2 and swap
+        // rewrite the same fields holding no lock at all, which no lock here can help.
         if (!gpu_initialized_) {
             throw FLANNException("GPU index not initialized. Call buildCUDAKnnSearch() or prepareGPUIndex() first.");
         }
+
+        // An empty query set returns after the readiness check and not before it, so that
+        // an unbuilt index reports the same refusal whether or not there is work to do.
+        if (num_queries == 0) {
+            return 0;
+        }
+
         const int search_width = resolveSearchWidth(params, knn);
 
-        // 6. Use caller-provided stream
+        // 5. Use caller-provided stream
         cudaStream_t exec_stream = stream;
 
-        // 7. Handle query padding if veclen % 4 != 0
+        // 6. Handle query padding if veclen % 4 != 0
         int padded_bytes = 4 * ((this->veclen_ + 3) / 4);
         const ElementType* kernel_queries = d_queries;
         CUDABuffer<ElementType> padded_queries;
@@ -826,7 +836,7 @@ public:
             kernel_queries = padded_queries.get();
         }
 
-        // 8. Launch cooperative search kernel
+        // 7. Launch cooperative search kernel
         bool success = launch_hierarchical_search_cooperative(
             reinterpret_cast<const unsigned char*>(dataset_ptr_),
             reinterpret_cast<const unsigned char*>(kernel_queries),
@@ -849,13 +859,13 @@ public:
                                  " at search width " + std::to_string(search_width));
         }
 
-        // 9. Check for kernel launch errors (non-blocking)
+        // 8. Check for kernel launch errors (non-blocking)
         CUDA_CHECK_LAST();
 
-        // 10. Stream-ordered release of the padding buffer (no-op if unused).
+        // 9. Stream-ordered release of the padding buffer (no-op if unused).
         padded_queries.freeAsync(exec_stream);
 
-        // 11. No synchronization - caller is responsible for stream sync
+        // 10. No synchronization - caller is responsible for stream sync
         return static_cast<int>(num_queries);
     }
 

@@ -84,15 +84,22 @@ inline constexpr int kDefaultSearchWidth = 128;
  *   the other 16: fewer candidates, no error. Costless for every width shipped so far,
  *   since 32 divides each power of two from 32 to 1024, and reachable today through
  *   HierarchicalCUDAIndexParams' branching argument or the branching loadIndexV2 restores
- *   from a saved index.
+ *   from a saved index. Note what that makes true jointly with the power-of-two bound
+ *   above: a power of two is a multiple of @p branching only when branching is itself a
+ *   power of two, so an index whose branching has any odd factor admits NO width at all
+ *   and every GPU search on it is refused, including one that states no width. The
+ *   refusal names the width because that is what the predicate is given; the value that
+ *   has to change is the index's branching.
  * - A non-positive @p branching is refused rather than divided by. buildIndexImpl
  *   refuses one under 2, but loadIndexV2 restores branching from a saved header without
  *   validating it, so the predicate is reachable with a value its own arithmetic cannot
- *   use: 0 faults, and C++ truncating division makes every negative value divide evenly.
+ *   use: 0 faults, and a negative branching whose magnitude divides the width slips both
+ *   the below-branching and the multiple-of bound, since `a % b` takes the sign of `a` and
+ *   the magnitude of |a| % |b| -- -32 against width 128 gives 0, while -48 gives 32.
  * - Below @p k, store_results' duplicate scan probes with heap_ids[local_id] over
  *   thread ids alone, so heap entries past the width are never used as a probe and
- *   duplicates from the overlapping trees survive into the returned neighbours. Past
- *   twice the width it is a shared-memory overrun instead: store_results' copy-out loop
+ *   duplicates from the overlapping trees survive into the returned neighbours. Far
+ *   enough below k it is a shared-memory overrun instead: store_results' copy-out loop
  *   runs to k over a heap of local_size * 2 entries, so width 32 with k 128 reads
  *   heap_ids[127], which starts 244 bytes past the end of the 130-int allocation and in
  *   range of no fault.
@@ -109,9 +116,9 @@ inline constexpr int kDefaultSearchWidth = 128;
  *   in range of the allocation, so no fault to report. Measured by removing this check and
  *   launching width 100: 100% GPU utilisation, no progress, killed at 150 s.
  * - Above the device limit the launch fails, which reads as a driver problem rather
- *   than as the configuration mistake it is. 1024 is admitted and sits on two sm_75
- *   limits at once: 16 KB of a block's 48 KB of shared memory, and 64 registers a thread
- *   for 65536, exactly the per-block register file. Measured on a T4 at 465.136 ms
+ *   than as the configuration mistake it is. 1024 is admitted: 16 KB of a block's 48 KB of
+ *   shared memory, with registers the tighter of the two at 64 a thread, which is exactly
+ *   the 65536 of the sm_75 per-block register file. Measured on a T4 at 465.136 ms
  *   against 38.068 at width 128 in the same interleaved pass, returning the true
  *   neighbour for 8000 of 8000 queries against 7957.
  *

@@ -1,13 +1,16 @@
 Version 1.9.3
         * HierarchicalCUDAIndex: the cooperative k-NN search width is a runtime
           parameter, SearchParams::cuda_search_width, refused rather than clamped
-        * BINARY INCOMPATIBLE with 1.9.2 for one symbol.
-          flann::cuda::launch_hierarchical_search_cooperative takes the width as a
-          new penultimate argument, so its mangled name changes and a caller compiled
-          against 1.9.2's header does not resolve against 1.9.3's library. The real
-          filename moves to libflann_cuda.so.1.9.3; the soname stays libflann_cuda.so.1.9,
-          since FLANN_SOVERSION is major.minor. A consumer that bundles the library by its
-          real filename must move that name with this bump.
+        * BINARY INCOMPATIBLE with upstream 1.9.2 for one symbol, and the version is
+          what first says so. flann::cuda::launch_hierarchical_search_cooperative took
+          the width as a new penultimate argument at cd9a4c84, while the version string
+          still read 1.9.2, so two mutually incompatible ABIs have shipped under the name
+          libflann_cuda.so.1.9.2 and nothing on disk tells them apart: upstream's
+          thirteen-argument symbol and this series' fourteen-argument one. 1.9.3 labels
+          the second. The soname stays libflann_cuda.so.1.9, since FLANN_SOVERSION is
+          major.minor, so a consumer that bundles the library by its real filename must
+          move that name with this bump -- and should treat any libflann_cuda.so.1.9.2 it
+          already holds as being of unknown ABI.
 
 Version 1.9.2
         * Removed redundant assignment (issue #422 @fluber)
