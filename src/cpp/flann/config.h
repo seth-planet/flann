@@ -33,7 +33,7 @@
 #ifdef FLANN_VERSION_
 #undef FLANN_VERSION_
 #endif
-#define FLANN_VERSION_ "1.9.2"
+#define FLANN_VERSION_ "1.9.3"
 
 #ifdef FLANN_VERSION_MAJOR_
 #undef FLANN_VERSION_MAJOR_
@@ -48,7 +48,7 @@
 #ifdef FLANN_VERSION_PATCH_
 #undef FLANN_VERSION_PATCH_
 #endif
-#define FLANN_VERSION_PATCH_ 2
+#define FLANN_VERSION_PATCH_ 3
 
 
 #endif /* FLANN_CONFIG_H_ */

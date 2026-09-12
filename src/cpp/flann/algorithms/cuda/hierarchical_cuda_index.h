@@ -36,12 +36,14 @@
 #include <cstring>  // For memcpy
 #include <cstdint>  // For SIZE_MAX
 #include <memory>   // For std::unique_ptr
+#include <type_traits>  // For std::is_same
 #include <cuda_runtime.h>
 #include <mutex>         // For std::unique_lock
 #include <shared_mutex>  // For std::shared_mutex, std::shared_lock
 
 #include "flann/algorithms/hierarchical_clustering_index.h"
 #include "flann/algorithms/cuda/cuda_utils.h"
+#include "flann/algorithms/cuda/hierarchical_search_width.h"
 #include "flann/algorithms/cuda/nn_cuda_index.h"
 #include "flann/util/gpu_saving.h"
 
@@ -63,6 +65,7 @@ bool launch_hierarchical_search_cooperative(
     int k,
     int num_trees,
     int branching,
+    int local_size,
     cudaStream_t stream = nullptr);
 
 // Note: launch_pad_queries is declared in kmeans_cuda_index.h (included first)
@@ -306,6 +309,78 @@ public:
 
         // Prepare GPU (upload tree/dataset) - this is K-independent
         prepareGPUIndex();
+    }
+
+    /**
+     * @brief The block width a search runs at, refusing one this index cannot run.
+     *
+     * The width is FLANN's search-effort dial -- see kDefaultSearchWidth. It rides on
+     * SearchParams rather than on the index so that it travels with the call: the index
+     * is shared between concurrent searches, and a width held as index state would be a
+     * field one search writes while another reads, would not survive swap() or the copy
+     * constructors, and would let a caller change a result that a memoizing layer keyed
+     * on the call arguments had already cached.
+     *
+     * CALL IT UNDER rw_lock_. It reads gpu_num_trees_ and branching_, which addPoints and
+     * removePoint rewrite under the exclusive lock, and the width it returns is validated
+     * against the tree count the launch will then use.
+     *
+     * @param params Search parameters; cuda_search_width 0 means this index's default
+     * @param knn    Neighbours requested, which the k bound needs
+     * @return the width to launch at
+     * @throws FLANNException naming the bound a stated width breaks
+     */
+    int resolveSearchWidth(const SearchParams& params, size_t knn) const
+    {
+        const bool defaulted = params.cuda_search_width == 0;
+        const int width = defaulted ? kDefaultSearchWidth : params.cuda_search_width;
+        const char* reason = hierarchical_search_width_error(
+            width, static_cast<int>(knn), this->branching_, gpu_num_trees_);
+        if (reason != nullptr) {
+            // Name the width's source. A caller who set nothing is told their
+            // SearchParams::cuda_search_width is wrong, goes looking for the value in
+            // their own code, and does not find it -- the bound they broke is the
+            // index's, which the branching in the message is there to show.
+            throw FLANNException(
+                (defaulted ? std::string("this index's default search width ")
+                           : std::string("SearchParams::cuda_search_width ")) +
+                std::to_string(width) + " cannot be used for this search: " + reason +
+                " (k=" + std::to_string(knn) +
+                ", branching=" + std::to_string(this->branching_) + ")");
+        }
+        return width;
+    }
+
+    /**
+     * @brief Refuse a GPU search whose element type the kernel cannot compute.
+     *
+     * The class is templated on Distance, but the cooperative kernel is template<int K>
+     * only and calls compute_hamming_distance unconditionally. With any other element
+     * type it popcounts the operands' encodings and returns plausible indices and
+     * distances that mean nothing -- no exception and no warning.
+     *
+     * A static_assert on the class would say this at compile time and cannot be used: it
+     * fails the build of flann::Index<Hamming<unsigned char>>, the SUPPORTED case.
+     * all_indices.h's create_index_by_type reaches the class through valid_combination,
+     * which instantiates needs_kdtree_distance<HierarchicalCUDAIndex<DummyDistance>> to
+     * decide whether the combination is legal at all, and DummyDistance::ElementType is
+     * float. Measured with g++ -fsyntax-only: the supported case builds clean, a planted
+     * class-body assert fails it, and the instantiation chain runs from the Index
+     * constructor through create_index_by_type without passing through flann.hpp's
+     * buildCUDAKnnSearch -- so turning that function's std::is_same guards into
+     * `if constexpr` would not free the assert. The check has to be a runtime one.
+     *
+     * @throws FLANNException if ElementType is not unsigned char
+     */
+    void requireHammingElementType() const
+    {
+        if (!std::is_same<ElementType, unsigned char>::value) {
+            throw FLANNException(
+                "HierarchicalCUDAIndex's GPU search path computes Hamming distance "
+                "unconditionally and requires unsigned char element type (binary "
+                "descriptors). For float descriptors with L2/L1 distance, use "
+                "KMeansCUDAIndex.");
+        }
     }
 
     /**
@@ -696,12 +771,10 @@ public:
         const SearchParams& params,
         cudaStream_t stream) const
     {
-        // 1. Validate GPU initialization
-        if (!gpu_initialized_) {
-            throw FLANNException("GPU index not initialized. Call buildCUDAKnnSearch() or prepareGPUIndex() first.");
-        }
+        // 0. Validate the element type the kernel will assume
+        requireHammingElementType();
 
-        // 2. Validate K value is supported
+        // 1. Validate K value is supported
         if (!isKValueSupportedForGPU(static_cast<int>(knn))) {
             throw FLANNException(
                 "Unsupported k=" + std::to_string(knn) + " for CUDA hierarchical search.\n"
@@ -709,23 +782,41 @@ public:
                 "Use a supported k value or fall back to CPU search.");
         }
 
-        // 3. Handle zero queries
-        if (num_queries == 0) {
-            return 0;
-        }
-
-        // 4. Validate output pointers
+        // 2. Validate output pointers
         if (d_indices == nullptr || d_dists == nullptr) {
             throw FLANNException("Output pointers d_indices and d_dists cannot be null");
         }
 
-        // 5. Thread safety - acquire shared lock for concurrent searches
+        // 3. Thread safety - acquire shared lock for concurrent searches
         std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
 
-        // 6. Use caller-provided stream
+        // 4. UNDER THE LOCK, all of it: this is the whole snapshot the LAUNCH runs
+        // against -- the lock is released at return while the kernel is still in flight,
+        // so it covers the launch and not the kernel's lifetime. addPoints and
+        // removePoint are the writers that take the exclusive lock; each calls
+        // freeGPUMemory, which nulls dataset_ptr_ and node_index_ptr_, zeroes
+        // gpu_num_trees_ and clears gpu_initialized_. A readiness check made before the
+        // lock can therefore be true, block here, and go on to launch against freed
+        // device pointers; a width resolved before the lock can clear the num_trees bound
+        // against a tree count of 0 and then launch against the restored count, which is
+        // the silent case that bound exists to refuse. loadIndex, loadIndexV2 and swap
+        // rewrite the same fields while holding no lock at all, which no lock here can help.
+        if (!gpu_initialized_) {
+            throw FLANNException("GPU index not initialized. Call buildCUDAKnnSearch() or prepareGPUIndex() first.");
+        }
+
+        // An empty query set returns after the readiness check and not before it, so that
+        // an unbuilt index reports the same refusal whether or not there are queries to search.
+        if (num_queries == 0) {
+            return 0;
+        }
+
+        const int search_width = resolveSearchWidth(params, knn);
+
+        // 5. Use caller-provided stream
         cudaStream_t exec_stream = stream;
 
-        // 7. Handle query padding if veclen % 4 != 0
+        // 6. Handle query padding if veclen % 4 != 0
         int padded_bytes = 4 * ((this->veclen_ + 3) / 4);
         const ElementType* kernel_queries = d_queries;
         CUDABuffer<ElementType> padded_queries;
@@ -745,7 +836,7 @@ public:
             kernel_queries = padded_queries.get();
         }
 
-        // 8. Launch cooperative search kernel
+        // 7. Launch cooperative search kernel
         bool success = launch_hierarchical_search_cooperative(
             reinterpret_cast<const unsigned char*>(dataset_ptr_),
             reinterpret_cast<const unsigned char*>(kernel_queries),
@@ -759,20 +850,22 @@ public:
             knn,
             gpu_num_trees_,
             this->branching_,
+            search_width,
             exec_stream
         );
 
         if (!success) {
-            throw FLANNException("Kernel launch failed for k=" + std::to_string(knn));
+            throw FLANNException("Kernel launch failed for k=" + std::to_string(knn) +
+                                 " at search width " + std::to_string(search_width));
         }
 
-        // 9. Check for kernel launch errors (non-blocking)
+        // 8. Check for kernel launch errors (non-blocking)
         CUDA_CHECK_LAST();
 
-        // 10. Stream-ordered release of the padding buffer (no-op if unused).
+        // 9. Stream-ordered release of the padding buffer (no-op if unused).
         padded_queries.freeAsync(exec_stream);
 
-        // 11. No synchronization - caller is responsible for stream sync
+        // 10. No synchronization - caller is responsible for stream sync
         return static_cast<int>(num_queries);
     }
 
@@ -1315,9 +1408,7 @@ public:
                      const SearchParams& params,
                      cudaStream_t stream) const
     {
-        if (!gpu_initialized_) {
-            throw FLANNException("Index not built or GPU data not uploaded");
-        }
+        requireHammingElementType();
 
         // Validate K value is supported for GPU search
         if (!isKValueSupportedForGPU(static_cast<int>(knn))) {
@@ -1330,6 +1421,13 @@ public:
         // Acquire shared lock - allows multiple concurrent searches
         // Mutations (addPoints, removePoint) acquire exclusive lock and wait for searches to complete
         std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
+
+        // Readiness and width under the lock, for the reason knnSearchGPUDirect gives
+        // where it takes the lock.
+        if (!gpu_initialized_) {
+            throw FLANNException("Index not built or GPU data not uploaded");
+        }
+        const int search_width = resolveSearchWidth(params, knn);
 
         size_t num_queries = queries.rows;
 
@@ -1414,11 +1512,13 @@ public:
             knn,               // Number of nearest neighbors
             gpu_num_trees_,    // Number of trees (roots at indices 0..num_trees-1)
             this->branching_,  // Branching factor (tree N's children start at N*branching)
+            search_width,      // Search effort: the block width the kernel runs at
             stream             // CUDA stream for concurrent execution
         );
 
         if (!success) {
-            throw FLANNException("Unsupported k value for GPU search");
+            throw FLANNException("Kernel launch failed for k=" + std::to_string(knn) +
+                                 " at search width " + std::to_string(search_width));
         }
 
         // Check for kernel launch errors (non-blocking)
