@@ -73,7 +73,9 @@ inline constexpr int kDefaultSearchWidth = 128;
  * - Below @p branching the kernel HANGS. find_new_node_dist walks the heap in groups of
  *   `branching` consecutive threads, one group per heap entry, advancing by
  *   `loc_id += local_size / branching`; below branching that step truncates to zero and
- *   the while loop around it cannot advance.
+ *   the while loop around it cannot advance. Arithmetically this case is already refused
+ *   by the multiple-of bound below -- a width under branching leaves a remainder equal to
+ *   itself -- and it is checked separately so that a hang is diagnosed as a hang.
  * - A width that is not a MULTIPLE of @p branching is the quiet half of the same
  *   arithmetic. The group count is ceil(local_size / branching) while the step is the
  *   floor, so the last group is a short one and the groups either side of that
@@ -83,6 +85,10 @@ inline constexpr int kDefaultSearchWidth = 128;
  *   since 32 divides each power of two from 32 to 1024, and reachable today through
  *   HierarchicalCUDAIndexParams' branching argument or the branching loadIndexV2 restores
  *   from a saved index.
+ * - A non-positive @p branching is refused rather than divided by. buildIndexImpl
+ *   refuses one under 2, but loadIndexV2 restores branching from a saved header without
+ *   validating it, so the predicate is reachable with a value its own arithmetic cannot
+ *   use: 0 faults, and C++ truncating division makes every negative value divide evenly.
  * - Below @p k, store_results' duplicate scan probes with heap_ids[local_id] over
  *   thread ids alone, so heap entries past the width are never used as a probe and
  *   duplicates from the overlapping trees survive into the returned neighbours. Past
@@ -111,8 +117,7 @@ inline constexpr int kDefaultSearchWidth = 128;
  *
  * @param local_size Requested block width
  * @param k          Neighbours the caller asked for
- * @param branching  Branching factor of the index being searched, which must be positive
- *                   because the width is checked against it by division
+ * @param branching  Branching factor of the index being searched
  * @param num_trees  Trees in the index, which the root seeding needs a thread each for
  * @return nullptr when the width is usable, otherwise a literal naming the bound it broke
  */

@@ -2,10 +2,9 @@
  * @file flann_search_width_test.cpp
  * @brief Bounds on the hierarchical CUDA search width.
  *
- * The predicate is pure host code and needs neither a GPU nor HDF5, so it is tested
- * here rather than only through the consumer that calls it -- coverage that lives
- * behind a GPU marker in another repository does not run when this library is built
- * on its own.
+ * The predicate is pure host code and needs neither a GPU nor HDF5. Its only other
+ * coverage sits behind a GPU marker in the consuming repository, which does not run
+ * when this library is built on its own.
  */
 
 #include <cstring>
@@ -63,16 +62,11 @@ TEST(SearchWidth, RefusesAWidthTheBlockCannotHold)
 
 TEST(SearchWidth, RefusesAWidthTheTreeWalkCannotUse)
 {
-    // Below branching the step truncates to zero and the walk cannot advance.
     EXPECT_TRUE(Names(hierarchical_search_width_error(32, 16, 64, 4),
                       "below the index's branching"));
 
-    // A width branching does not divide leaves the last thread group short: at 128 with
-    // branching 48 it holds 32 threads and expands 32 of its node's 48 children.
     EXPECT_TRUE(Names(hierarchical_search_width_error(128, 16, 48, 4), "not a multiple"));
 
-    // The predicate divides by branching, so a non-positive one is refused rather than
-    // faulting inside the check.
     EXPECT_TRUE(Names(hierarchical_search_width_error(128, 16, 0, 4),
                       "branching factor is not positive"));
 }

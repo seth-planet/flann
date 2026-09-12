@@ -6,9 +6,8 @@ Version 1.9.3
           new penultimate argument, so its mangled name changes and a caller compiled
           against 1.9.2's header does not resolve against 1.9.3's library. The real
           filename moves to libflann_cuda.so.1.9.3; the soname stays libflann_cuda.so.1.9,
-          since FLANN_SOVERSION is major.minor. A bundling consumer that pins the real
-          filename -- cuda_pipeline's cmake/StageFlann.cmake does -- must move its pin
-          with this bump, and stops with a missing-file error if it does not.
+          since FLANN_SOVERSION is major.minor. A consumer that bundles the library by its
+          real filename must move that name with this bump.
 
 Version 1.9.2
         * Removed redundant assignment (issue #422 @fluber)

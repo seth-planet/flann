@@ -797,7 +797,7 @@ public:
         // be true, block here, and go on to launch against freed device pointers; a width
         // resolved before the lock can clear the num_trees bound against a tree count of
         // 0 and then launch against the restored count, which is the silent case that
-        // bound exists to refuse. Still before any allocation: the first one is step 7.
+        // bound exists to refuse.
         if (!gpu_initialized_) {
             throw FLANNException("GPU index not initialized. Call buildCUDAKnnSearch() or prepareGPUIndex() first.");
         }
@@ -1412,9 +1412,8 @@ public:
         // Mutations (addPoints, removePoint) acquire exclusive lock and wait for searches to complete
         std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
 
-        // Readiness and width under the lock, for the reason the device-pointer overload
-        // gives at its step 5: freeGPUMemory clears both the flag and the state the width
-        // is validated against, and the mutators call it holding the exclusive lock.
+        // Readiness and width under the lock, for the reason knnSearchGPUDirect gives
+        // where it takes the lock.
         if (!gpu_initialized_) {
             throw FLANNException("Index not built or GPU data not uploaded");
         }
