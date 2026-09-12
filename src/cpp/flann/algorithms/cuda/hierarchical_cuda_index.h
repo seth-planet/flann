@@ -42,6 +42,7 @@
 
 #include "flann/algorithms/hierarchical_clustering_index.h"
 #include "flann/algorithms/cuda/cuda_utils.h"
+#include "flann/algorithms/cuda/hierarchical_search_width.h"
 #include "flann/algorithms/cuda/nn_cuda_index.h"
 #include "flann/util/gpu_saving.h"
 
@@ -63,6 +64,7 @@ bool launch_hierarchical_search_cooperative(
     int k,
     int num_trees,
     int branching,
+    int local_size,
     cudaStream_t stream = nullptr);
 
 // Note: launch_pad_queries is declared in kmeans_cuda_index.h (included first)
@@ -306,6 +308,43 @@ public:
 
         // Prepare GPU (upload tree/dataset) - this is K-independent
         prepareGPUIndex();
+    }
+
+    /**
+     * @brief Set the search effort: the block width the GPU kernel runs at.
+     *
+     * This is FLANN's SearchParams(checks) dial, which the CUDA port lost -- see
+     * kDefaultSearchWidth. The width sets how many candidates the shared heap retains
+     * per round (`local_size * 2`), so a narrower width examines fewer candidates and
+     * returns faster, and a wider one searches harder. It changes which neighbours come
+     * back, so treat a change as an accuracy change and measure it.
+     *
+     * Takes effect on the next search; the index need not be rebuilt or reloaded, which
+     * is what makes a width A/B cheap for a caller.
+     *
+     * @param width Block width, a power of two in [branching, 1024] and at least k
+     * @throws FLANNException if the width can never run, whatever k the caller uses
+     */
+    void setSearchWidth(int width)
+    {
+        // k is unknown until the search, so only the k-independent bounds can be
+        // answered here. hierarchical_search_width_error re-checks all of them against
+        // the real k at launch, and is the check that protects a direct caller of the
+        // launch function.
+        const char* reason = hierarchical_search_width_error(width, 0, this->branching_);
+        if (reason != nullptr) {
+            throw FLANNException(std::string("Invalid search width ") +
+                                 std::to_string(width) + ": " + reason);
+        }
+        search_width_ = width;
+    }
+
+    /**
+     * @brief The block width GPU searches currently run at.
+     */
+    int searchWidth() const
+    {
+        return search_width_;
     }
 
     /**
@@ -759,6 +798,7 @@ public:
             knn,
             gpu_num_trees_,
             this->branching_,
+            search_width_,
             exec_stream
         );
 
@@ -1414,6 +1454,7 @@ public:
             knn,               // Number of nearest neighbors
             gpu_num_trees_,    // Number of trees (roots at indices 0..num_trees-1)
             this->branching_,  // Branching factor (tree N's children start at N*branching)
+            search_width_,     // Search effort: the block width the kernel runs at
             stream             // CUDA stream for concurrent execution
         );
 
@@ -1463,6 +1504,8 @@ private:
 
     // Note: Thread safety is now handled by rw_lock_ in base class CUDAIndex
     // (std::shared_mutex for reader-writer locking)
+
+    int search_width_ = kDefaultSearchWidth;  ///< Block width GPU searches run at (setSearchWidth)
 
     int gpu_num_trees_;         ///< Number of trees (tree roots are nodes 0..num_trees-1)
     int gpu_num_nodes_;         ///< Number of tree nodes (needed for kernel)

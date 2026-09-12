@@ -2,6 +2,7 @@
 #define FLANN_HIERARCHICAL_SEARCH_COOPERATIVE_CUH
 
 #include <cstdio>  // For fprintf error reporting
+#include "flann/algorithms/cuda/hierarchical_search_width.h"
 #include "bitonic_sort.cuh"
 #include "distance_kernels.cuh"
 // Note: KMeansNodeGPU no longer needed - pivot_index is stored in interleaved node_index array
@@ -432,8 +433,8 @@ __device__ inline void store_results(
  *
  * Kernel launch configuration:
  * - Grid: num_queries (one block per query)
- * - Block: 256 threads (cooperative workgroup)
- * - Shared memory: (256 * 2 * 2 + 2) * sizeof(int)
+ * - Block: the caller's search width, a power of two (cooperative workgroup)
+ * - Shared memory: (width * 2 * 2 + 2) * sizeof(int)
  *
  * @param device_node_index Hybrid node index array with interleaved [pivot, child_ptr] pairs
  * @param dataset Full dataset of descriptors (pivots looked up via pivot_index)
@@ -465,7 +466,7 @@ __global__ void hierarchical_search_cooperative_kernel(
     // threadIdx.x = local thread ID within block
     int query_id = blockIdx.x;
     int local_id = threadIdx.x;
-    int local_size = blockDim.x;  // Should be 256
+    int local_size = blockDim.x;  // the search width the launch was configured with
 
     if (query_id >= num_queries) return;
 
@@ -526,8 +527,10 @@ __global__ void hierarchical_search_cooperative_kernel(
  * @param k Number of nearest neighbors
  * @param num_trees Number of parallel trees
  * @param branching Branching factor
+ * @param local_size Block width to search at -- FLANN's search-effort dial. See
+ *        kDefaultSearchWidth; validated by hierarchical_search_width_error.
  * @param stream CUDA stream for concurrent execution (nullptr = default stream)
- * @return true if kernel launched successfully
+ * @return true if the kernel launched, false for an unsupported k or an unusable width
  */
 bool launch_hierarchical_search_cooperative(
     const unsigned char* dataset,
@@ -542,11 +545,18 @@ bool launch_hierarchical_search_cooperative(
     int k,
     int num_trees,
     int branching,
-    cudaStream_t stream = nullptr
+    int local_size,
+    cudaStream_t stream
 ) {
-    // Cooperative kernel launch configuration
-    // LOC_SIZE=128 matches K-Means CUDA kernel for consistency (97.4% precision)
-    const int local_size = 128;
+    // Refuse rather than clamp: every bound this checks fails silently or hangs, and a
+    // clamped width would return neighbours for a search the caller did not ask for.
+    const char* width_error = hierarchical_search_width_error(local_size, k, branching);
+    if (width_error != nullptr) {
+        fprintf(stderr,
+                "FLANN hierarchical cooperative search: %s (width %d, k %d, branching %d)\n",
+                width_error, local_size, k, branching);
+        return false;
+    }
 
     // Grid: one block per query (matching OpenCL one workgroup per query)
     dim3 grid(num_queries);
