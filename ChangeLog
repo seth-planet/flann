@@ -8,9 +8,9 @@ Version 1.9.3
           libflann_cuda.so.1.9.2 and nothing on disk tells them apart: upstream's
           thirteen-argument symbol and this series' fourteen-argument one. 1.9.3 labels
           the second. The soname stays libflann_cuda.so.1.9, since FLANN_SOVERSION is
-          major.minor, so a consumer that bundles the library by its real filename must
+          major.minor. A consumer that bundles the library by its real filename must
           move that name with this bump -- and should treat any libflann_cuda.so.1.9.2 it
-          already holds as being of unknown ABI.
+          already holds as having unknown ABI.
 
 Version 1.9.2
         * Removed redundant assignment (issue #422 @fluber)

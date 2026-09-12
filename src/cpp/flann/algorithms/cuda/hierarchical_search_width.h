@@ -125,7 +125,7 @@ inline constexpr int kDefaultSearchWidth = 128;
  * @param local_size Requested block width
  * @param k          Neighbours the caller asked for
  * @param branching  Branching factor of the index being searched
- * @param num_trees  Trees in the index, which the root seeding needs a thread each for
+ * @param num_trees  Trees in the index, each needing a thread for root seeding
  * @return nullptr when the width is usable, otherwise a literal naming the bound it broke
  */
 inline const char* hierarchical_search_width_error(int local_size, int k, int branching,

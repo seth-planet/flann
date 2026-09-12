@@ -367,8 +367,8 @@ public:
      * float. Measured with g++ -fsyntax-only: the supported case builds clean, a planted
      * class-body assert fails it, and the instantiation chain runs from the Index
      * constructor through create_index_by_type without passing through flann.hpp's
-     * buildCUDAKnnSearch -- so making that function's std::is_same guards `if constexpr`
-     * would not free the assert. The check has to be a runtime one.
+     * buildCUDAKnnSearch -- so turning that function's std::is_same guards into
+     * `if constexpr` would not free the assert. The check has to be a runtime one.
      *
      * @throws FLANNException if ElementType is not unsigned char
      */
@@ -800,13 +800,13 @@ public:
         // device pointers; a width resolved before the lock can clear the num_trees bound
         // against a tree count of 0 and then launch against the restored count, which is
         // the silent case that bound exists to refuse. loadIndex, loadIndexV2 and swap
-        // rewrite the same fields holding no lock at all, which no lock here can help.
+        // rewrite the same fields while holding no lock at all, which no lock here can help.
         if (!gpu_initialized_) {
             throw FLANNException("GPU index not initialized. Call buildCUDAKnnSearch() or prepareGPUIndex() first.");
         }
 
         // An empty query set returns after the readiness check and not before it, so that
-        // an unbuilt index reports the same refusal whether or not there is work to do.
+        // an unbuilt index reports the same refusal whether or not there are queries to search.
         if (num_queries == 0) {
             return 0;
         }
