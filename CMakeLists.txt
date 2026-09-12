@@ -10,7 +10,7 @@ if(FLANN_IS_SUBPROJECT)
     message(STATUS "Building FLANN as a subproject")
 endif()
 
-project(flann VERSION 1.9.2 LANGUAGES C CXX)
+project(flann VERSION 1.9.3 LANGUAGES C CXX)
 string(TOLOWER ${PROJECT_NAME} PROJECT_NAME_LOWER)
 
 # Set C++17 standard for modern features (shared_mutex, etc.)

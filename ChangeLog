@@ -1,3 +1,15 @@
+Version 1.9.3
+        * HierarchicalCUDAIndex: the cooperative k-NN search width is a runtime
+          parameter, SearchParams::cuda_search_width, refused rather than clamped
+        * BINARY INCOMPATIBLE with 1.9.2 for one symbol.
+          flann::cuda::launch_hierarchical_search_cooperative takes the width as a
+          new penultimate argument, so its mangled name changes and a caller compiled
+          against 1.9.2's header does not resolve against 1.9.3's library. The real
+          filename moves to libflann_cuda.so.1.9.3; the soname stays libflann_cuda.so.1.9,
+          since FLANN_SOVERSION is major.minor. A bundling consumer that pins the real
+          filename -- cuda_pipeline's cmake/StageFlann.cmake does -- must move its pin
+          with this bump, and stops with a missing-file error if it does not.
+
 Version 1.9.2
         * Removed redundant assignment (issue #422 @fluber)
         * Removed unnecessary null checks before delete (issue #420 @elfring)
