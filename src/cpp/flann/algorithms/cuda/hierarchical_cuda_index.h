@@ -354,13 +354,16 @@ public:
      * type it popcounts the operands' encodings and returns plausible indices and
      * distances that mean nothing -- no exception and no warning.
      *
-     * A static_assert on the class would say this at compile time, and cannot be used:
-     * flann.hpp's buildCUDAKnnSearch guards the hierarchical branch with a runtime
-     * `if` over std::is_same, so `new HierarchicalCUDAIndex<Distance>` below it is
-     * compiled for every Distance the wrapper is instantiated with. Asserting in the
-     * class body therefore fails the build of flann::Index<L2<float>>, which is
-     * measured, not predicted. Making those guards `if constexpr` would discard the
-     * dead branch and free the assert; until then the check has to be a runtime one.
+     * A static_assert on the class would say this at compile time and cannot be used: it
+     * fails the build of flann::Index<Hamming<unsigned char>>, the SUPPORTED case.
+     * all_indices.h's create_index_by_type reaches the class through valid_combination,
+     * which instantiates needs_kdtree_distance<HierarchicalCUDAIndex<DummyDistance>> to
+     * decide whether the combination is legal at all, and DummyDistance::ElementType is
+     * float. Measured with g++ -fsyntax-only: the supported case builds clean, a planted
+     * class-body assert fails it, and the instantiation chain runs from the Index
+     * constructor through create_index_by_type without passing through flann.hpp's
+     * buildCUDAKnnSearch -- so making that function's std::is_same guards `if constexpr`
+     * would not free the assert. The check has to be a runtime one.
      *
      * @throws FLANNException if ElementType is not unsigned char
      */
@@ -766,12 +769,7 @@ public:
         // 0. Validate the element type the kernel will assume
         requireHammingElementType();
 
-        // 1. Validate GPU initialization
-        if (!gpu_initialized_) {
-            throw FLANNException("GPU index not initialized. Call buildCUDAKnnSearch() or prepareGPUIndex() first.");
-        }
-
-        // 2. Validate K value is supported
+        // 1. Validate K value is supported
         if (!isKValueSupportedForGPU(static_cast<int>(knn))) {
             throw FLANNException(
                 "Unsupported k=" + std::to_string(knn) + " for CUDA hierarchical search.\n"
@@ -779,24 +777,30 @@ public:
                 "Use a supported k value or fall back to CPU search.");
         }
 
-        // 3. Handle zero queries
+        // 2. Handle zero queries
         if (num_queries == 0) {
             return 0;
         }
 
-        // 4. Validate output pointers
+        // 3. Validate output pointers
         if (d_indices == nullptr || d_dists == nullptr) {
             throw FLANNException("Output pointers d_indices and d_dists cannot be null");
         }
 
-        // 5. Thread safety - acquire shared lock for concurrent searches
+        // 4. Thread safety - acquire shared lock for concurrent searches
         std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
 
-        // 5b. UNDER THE LOCK, because it reads gpu_num_trees_ and branching_, which
-        // addPoints and removePoint mutate under the exclusive lock -- freeGPUMemory zeroes
-        // the tree count, so a width resolved outside the lock can clear the num_trees bound
-        // against 0 and then launch against the new count, which is the silent case that
+        // 5. UNDER THE LOCK, both of them: this is the whole snapshot the launch runs
+        // against. addPoints and removePoint call freeGPUMemory holding the exclusive
+        // lock, and it nulls dataset_ptr_ and node_index_ptr_, zeroes gpu_num_trees_ and
+        // clears gpu_initialized_. A readiness check made before the lock can therefore
+        // be true, block here, and go on to launch against freed device pointers; a width
+        // resolved before the lock can clear the num_trees bound against a tree count of
+        // 0 and then launch against the restored count, which is the silent case that
         // bound exists to refuse. Still before any allocation: the first one is step 7.
+        if (!gpu_initialized_) {
+            throw FLANNException("GPU index not initialized. Call buildCUDAKnnSearch() or prepareGPUIndex() first.");
+        }
         const int search_width = resolveSearchWidth(params, knn);
 
         // 6. Use caller-provided stream
@@ -1394,9 +1398,7 @@ public:
                      const SearchParams& params,
                      cudaStream_t stream) const
     {
-        if (!gpu_initialized_) {
-            throw FLANNException("Index not built or GPU data not uploaded");
-        }
+        requireHammingElementType();
 
         // Validate K value is supported for GPU search
         if (!isKValueSupportedForGPU(static_cast<int>(knn))) {
@@ -1406,14 +1408,16 @@ public:
                 "Use a supported k value or fall back to CPU search.");
         }
 
-        requireHammingElementType();
-
         // Acquire shared lock - allows multiple concurrent searches
         // Mutations (addPoints, removePoint) acquire exclusive lock and wait for searches to complete
         std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
 
-        // Under the lock, for the reason the device-pointer overload gives: the width is
-        // resolved against gpu_num_trees_ and branching_, which the mutators rewrite.
+        // Readiness and width under the lock, for the reason the device-pointer overload
+        // gives at its step 5: freeGPUMemory clears both the flag and the state the width
+        // is validated against, and the mutators call it holding the exclusive lock.
+        if (!gpu_initialized_) {
+            throw FLANNException("Index not built or GPU data not uploaded");
+        }
         const int search_width = resolveSearchWidth(params, knn);
 
         size_t num_queries = queries.rows;
