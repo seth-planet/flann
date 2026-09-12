@@ -312,32 +312,34 @@ public:
     }
 
     /**
-     * @brief Set the search effort: the block width the GPU kernel runs at.
+     * @brief The block width a search runs at, refusing one this index cannot run.
      *
-     * This is FLANN's SearchParams(checks) dial, which the CUDA port lost -- see
-     * kDefaultSearchWidth. The width sets how many candidates the shared heap retains
-     * per round (`local_size * 2`), so a narrower width examines fewer candidates and
-     * returns faster, and a wider one searches harder. It changes which neighbours come
-     * back, so treat a change as an accuracy change and measure it.
+     * The width is FLANN's search-effort dial -- see kDefaultSearchWidth. It rides on
+     * SearchParams rather than on the index so that it travels with the call: the index
+     * is shared between concurrent searches, and a width held as index state would be a
+     * field one search writes while another reads, would not survive swap() or the copy
+     * constructors, and would let a caller change a result that a memoizing layer keyed
+     * on the call arguments had already cached.
      *
-     * Takes effect on the next search; the index need not be rebuilt or reloaded, which
-     * is what makes a width A/B cheap for a caller.
-     *
-     * @param width Block width, a power of two in [branching, 1024] and at least k
-     * @throws FLANNException if the width can never run, whatever k the caller uses
+     * @param params Search parameters; cuda_search_width 0 means this index's default
+     * @param knn    Neighbours requested, which the k bound needs
+     * @return the width to launch at
+     * @throws FLANNException naming the bound a stated width breaks
      */
-    void setSearchWidth(int width)
+    int resolveSearchWidth(const SearchParams& params, size_t knn) const
     {
-        // k is unknown until the search, so only the k-independent bounds can be
-        // answered here. hierarchical_search_width_error re-checks all of them against
-        // the real k at launch, and is the check that protects a direct caller of the
-        // launch function.
-        const char* reason = hierarchical_search_width_error(width, 0, this->branching_);
+        const int width = params.cuda_search_width == 0
+            ? kDefaultSearchWidth
+            : params.cuda_search_width;
+        const char* reason = hierarchical_search_width_error(
+            width, static_cast<int>(knn), this->branching_);
         if (reason != nullptr) {
-            throw FLANNException(std::string("Invalid search width ") +
-                                 std::to_string(width) + ": " + reason);
+            throw FLANNException(
+                "SearchParams::cuda_search_width " + std::to_string(width) + " cannot be "
+                "used for this search: " + reason + " (k=" + std::to_string(knn) +
+                ", branching=" + std::to_string(this->branching_) + ")");
         }
-        search_width_ = width;
+        return width;
     }
 
     /**
@@ -367,14 +369,6 @@ public:
                 "descriptors). For float descriptors with L2/L1 distance, use "
                 "KMeansCUDAIndex.");
         }
-    }
-
-    /**
-     * @brief The block width GPU searches currently run at.
-     */
-    int searchWidth() const
-    {
-        return search_width_;
     }
 
     /**
@@ -781,6 +775,10 @@ public:
                 "Use a supported k value or fall back to CPU search.");
         }
 
+        // 2b. Resolve and validate the search width before any allocation, so a refused
+        // width costs nothing and has nothing to unwind.
+        const int search_width = resolveSearchWidth(params, knn);
+
         // 3. Handle zero queries
         if (num_queries == 0) {
             return 0;
@@ -831,7 +829,7 @@ public:
             knn,
             gpu_num_trees_,
             this->branching_,
-            search_width_,
+            search_width,
             exec_stream
         );
 
@@ -1401,6 +1399,7 @@ public:
         }
 
         requireHammingElementType();
+        const int search_width = resolveSearchWidth(params, knn);
 
         // Acquire shared lock - allows multiple concurrent searches
         // Mutations (addPoints, removePoint) acquire exclusive lock and wait for searches to complete
@@ -1489,7 +1488,7 @@ public:
             knn,               // Number of nearest neighbors
             gpu_num_trees_,    // Number of trees (roots at indices 0..num_trees-1)
             this->branching_,  // Branching factor (tree N's children start at N*branching)
-            search_width_,     // Search effort: the block width the kernel runs at
+            search_width,      // Search effort: the block width the kernel runs at
             stream             // CUDA stream for concurrent execution
         );
 
@@ -1539,8 +1538,6 @@ private:
 
     // Note: Thread safety is now handled by rw_lock_ in base class CUDAIndex
     // (std::shared_mutex for reader-writer locking)
-
-    int search_width_ = kDefaultSearchWidth;  ///< Block width GPU searches run at (setSearchWidth)
 
     int gpu_num_trees_;         ///< Number of trees (tree roots are nodes 0..num_trees-1)
     int gpu_num_nodes_;         ///< Number of tree nodes (needed for kernel)

@@ -67,6 +67,7 @@ struct SearchParams
     	use_heap = FLANN_Undefined;
     	cores = 1;
     	matrices_in_gpu_ram = false;
+    	cuda_search_width = 0;
     }
 
     // how many leafs to visit when searching for neighbours (-1 for unlimited)
@@ -83,6 +84,10 @@ struct SearchParams
     int cores;
     // for GPU search indicates if matrices are already in GPU ram
     bool matrices_in_gpu_ram;
+    // block width the cooperative CUDA kernels search at -- their search-effort dial, the
+    // CUDA counterpart of `checks` (0 = the index's default). See
+    // algorithms/cuda/hierarchical_search_width.h. Ignored by the CPU indices.
+    int cuda_search_width;
 };
 
 

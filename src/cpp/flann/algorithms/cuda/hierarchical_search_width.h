@@ -35,9 +35,17 @@
  * @brief The block width the cooperative hierarchical k-NN search runs at, and the
  *        bounds a width has to satisfy.
  *
- * Host-side and free of CUDA, because the two sides of the search share nothing else:
+ * Host-side and free of CUDA, so both sides of the search can include it:
  * hierarchical_cuda_index.h declares the launch and is compiled by the host compiler,
- * kernels/hierarchical_search_cooperative.cuh defines it and is compiled by nvcc.
+ * kernels/hierarchical_search_cooperative.cuh defines it and is compiled by nvcc, and the
+ * nvcc translation unit includes neither the index header nor cuda_utils.h.
+ *
+ * Separate from cuda_utils.h's getCUDALocSize, which is the kmeans cooperative kernel's
+ * width and returns the same 128. Sharing one value between the two kernels is what put
+ * this one here: the hierarchical launch site carried the comment "LOC_SIZE=128 matches
+ * K-Means CUDA kernel for consistency (97.4% precision)", and that 97.4% is a kmeans
+ * measurement. The two kernels have different heaps, different barrier counts and
+ * different bounds, so they get separate dials.
  */
 
 namespace flann {
@@ -71,7 +79,11 @@ static const int kDefaultSearchWidth = 128;
  *   `stride >>= 1` from size/2 over a heap of local_size*2, and a bitonic network only
  *   sorts when its width is a power of two.
  * - Above the device limit the launch fails, which reads as a driver problem rather
- *   than as the configuration mistake it is.
+ *   than as the configuration mistake it is. 1024 is admitted: measured on a T4 at
+ *   464.5 ms against 37.9 at 128, returning the true neighbour for 8000 of 8000 queries.
+ *   cuda_utils.h's getCUDALocSize records "1024: FAILED (exceeds GPU resource limits)",
+ *   which is the kmeans kernel's limit -- this kernel's shared memory is
+ *   (width * 4 + 2) ints, 16 KB at width 1024 and well inside a block's 48 KB.
  *
  * @param local_size Requested block width
  * @param k          Neighbours the caller asked for
