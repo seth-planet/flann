@@ -36,6 +36,7 @@
 #include <cstring>  // For memcpy
 #include <cstdint>  // For SIZE_MAX
 #include <memory>   // For std::unique_ptr
+#include <type_traits>  // For std::is_same
 #include <cuda_runtime.h>
 #include <mutex>         // For std::unique_lock
 #include <shared_mutex>  // For std::shared_mutex, std::shared_lock
@@ -337,6 +338,35 @@ public:
                                  std::to_string(width) + ": " + reason);
         }
         search_width_ = width;
+    }
+
+    /**
+     * @brief Refuse a GPU search whose element type the kernel cannot compute.
+     *
+     * The class is templated on Distance, but the cooperative kernel is template<int K>
+     * only and calls compute_hamming_distance unconditionally. With any other element
+     * type it popcounts the operands' encodings and returns plausible indices and
+     * distances that mean nothing -- no exception and no warning.
+     *
+     * A static_assert on the class would say this at compile time, and cannot be used:
+     * flann.hpp's buildCUDAKnnSearch guards the hierarchical branch with a runtime
+     * `if` over std::is_same, so `new HierarchicalCUDAIndex<Distance>` below it is
+     * compiled for every Distance the wrapper is instantiated with. Asserting in the
+     * class body therefore fails the build of flann::Index<L2<float>>, which is
+     * measured, not predicted. Making those guards `if constexpr` would discard the
+     * dead branch and free the assert; until then the check has to be a runtime one.
+     *
+     * @throws FLANNException if ElementType is not unsigned char
+     */
+    void requireHammingElementType() const
+    {
+        if (!std::is_same<ElementType, unsigned char>::value) {
+            throw FLANNException(
+                "HierarchicalCUDAIndex's GPU search path computes Hamming distance "
+                "unconditionally and requires unsigned char element type (binary "
+                "descriptors). For float descriptors with L2/L1 distance, use "
+                "KMeansCUDAIndex.");
+        }
     }
 
     /**
@@ -735,6 +765,9 @@ public:
         const SearchParams& params,
         cudaStream_t stream) const
     {
+        // 0. Validate the element type the kernel will assume
+        requireHammingElementType();
+
         // 1. Validate GPU initialization
         if (!gpu_initialized_) {
             throw FLANNException("GPU index not initialized. Call buildCUDAKnnSearch() or prepareGPUIndex() first.");
@@ -1366,6 +1399,8 @@ public:
                 "Supported k values: 1, 2, 3, 4, 5, 8, 10, 12, 16, 20, 24, 32, 50, 64, 100, 128\n"
                 "Use a supported k value or fall back to CPU search.");
         }
+
+        requireHammingElementType();
 
         // Acquire shared lock - allows multiple concurrent searches
         // Mutations (addPoints, removePoint) acquire exclusive lock and wait for searches to complete
