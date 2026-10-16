@@ -14,6 +14,13 @@ flann_add_gtest(flann_search_width_test flann_search_width_test.cpp)
 # include path rather than inheriting one.
 target_include_directories(flann_search_width_test PRIVATE ${PROJECT_SOURCE_DIR}/src/cpp)
 
+# Outside the HDF5 block for the same reason: the macros under test are header-only and need no
+# card, only the CUDA runtime.
+if (BUILD_CUDA_LIB)
+    flann_add_cuda_gtest(flann_cuda_check_message_test flann_cuda_check_message_test.cpp)
+    target_include_directories(flann_cuda_check_message_test PRIVATE ${PROJECT_SOURCE_DIR}/src/cpp)
+endif()
+
 if (HDF5_FOUND)
     include_directories(${HDF5_INCLUDE_DIR})
 

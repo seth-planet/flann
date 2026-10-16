@@ -45,6 +45,9 @@ namespace cuda {
 /**
  * @brief Check CUDA runtime API call and throw on error
  *
+ * The message names the status as "(cudaErrorName)" straight after its description, so a caller
+ * that classifies by text can tell a latched context from an exhausted card.
+ *
  * Usage:
  *   CUDA_CHECK(cudaMalloc(&ptr, size));
  *   CUDA_CHECK(cudaMemcpy(dst, src, size, cudaMemcpyHostToDevice));
@@ -57,6 +60,7 @@ namespace cuda {
                 std::string("CUDA error at ") + __FILE__ + ":" + \
                 std::to_string(__LINE__) + " - " + \
                 cudaGetErrorString(err) + \
+                " (" + cudaGetErrorName(err) + ")" + \
                 " (error code: " + std::to_string(static_cast<int>(err)) + ")" \
             ); \
         } \
@@ -80,7 +84,8 @@ namespace cuda {
             throw ::flann::FLANNException( \
                 std::string("CUDA kernel launch error at ") + __FILE__ + ":" + \
                 std::to_string(__LINE__) + " - " + \
-                cudaGetErrorString(err) \
+                cudaGetErrorString(err) + \
+                " (" + cudaGetErrorName(err) + ")" \
             ); \
         } \
     } while (0)
