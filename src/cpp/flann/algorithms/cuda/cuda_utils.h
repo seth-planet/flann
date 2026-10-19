@@ -149,7 +149,7 @@ public:
                 throw FLANNException(
                     std::string("CUDA allocation failed for ") +
                     std::to_string(size_bytes_) + " bytes: " +
-                    cudaGetErrorString(err)
+                    cudaGetErrorString(err) + " (" + cudaGetErrorName(err) + ")"
                 );
             }
         }
@@ -178,7 +178,7 @@ public:
                 throw FLANNException(
                     std::string("CUDA async allocation failed for ") +
                     std::to_string(size_bytes_) + " bytes: " +
-                    cudaGetErrorString(err));
+                    cudaGetErrorString(err) + " (" + cudaGetErrorName(err) + ")");
             }
         }
     }
@@ -245,7 +245,7 @@ public:
         }
         if (err != cudaSuccess) {
             throw FLANNException(
-                std::string("CUDA upload failed: ") + cudaGetErrorString(err)
+                std::string("CUDA upload failed: ") + cudaGetErrorString(err) + " (" + cudaGetErrorName(err) + ")"
             );
         }
     }
@@ -270,7 +270,7 @@ public:
         }
         if (err != cudaSuccess) {
             throw FLANNException(
-                std::string("CUDA download failed: ") + cudaGetErrorString(err)
+                std::string("CUDA download failed: ") + cudaGetErrorString(err) + " (" + cudaGetErrorName(err) + ")"
             );
         }
     }
@@ -319,7 +319,7 @@ public:
                 size_bytes_ = 0;
                 throw FLANNException(
                     std::string("CUDA reallocation failed: ") +
-                    cudaGetErrorString(err)
+                    cudaGetErrorString(err) + " (" + cudaGetErrorName(err) + ")"
                 );
             }
         }
@@ -569,7 +569,7 @@ public:
         if (err != cudaSuccess) {
             throw FLANNException(
                 std::string("Failed to create CUDA stream: ") +
-                cudaGetErrorString(err)
+                cudaGetErrorString(err) + " (" + cudaGetErrorName(err) + ")"
             );
         }
     }
@@ -624,7 +624,7 @@ public:
             if (err != cudaSuccess) {
                 throw FLANNException(
                     std::string("CUDA stream synchronization failed: ") +
-                    cudaGetErrorString(err)
+                    cudaGetErrorString(err) + " (" + cudaGetErrorName(err) + ")"
                 );
             }
         }

@@ -1,11 +1,12 @@
 /**
  * @file flann_cuda_check_message_test.cpp
- * @brief CUDA_CHECK and CUDA_CHECK_LAST name the status as "(cudaErrorName)".
+ * @brief CUDA_CHECK, CUDA_CHECK_LAST and the direct CUDABuffer throws name the status as "(cudaErrorName)".
  *
  * Callers classify a failed index by its message text, and the status name is the part that
- * separates a latched context from an exhausted card. Neither arm needs a device:
- * cudaGetErrorName reads a table, and the runtime call in the second arm fails the same way
- * with no card.
+ * separates a latched context from an exhausted card. No arm needs a device except where it
+ * says so: cudaGetErrorName reads a table, and the runtime calls fail the same way with no card.
+ * Each direct-throw arm takes the expected name from the same call it provokes, so it holds
+ * on a box with a card and on one without.
  */
 
 #include <cstdint>
@@ -49,6 +50,57 @@ TEST(CudaCheckMessage, CheckLastNamesTheStatusOfTheFailedCall)
     std::string what = "<no FLANNException>";
     try {
         CUDA_CHECK_LAST();
+    } catch (const flann::FLANNException& ex) {
+        what = ex.what();
+    }
+    EXPECT_NE(what.find(" (" + std::string(cudaGetErrorName(e)) + ")"), std::string::npos) << what;
+}
+
+TEST(CudaBufferThrowMessage, StreamConstructorNamesTheStatusOfCudaMallocAsync)
+{
+    void* p = nullptr;
+    const cudaError_t e = cudaMallocAsync(&p, SIZE_MAX, nullptr);
+    ASSERT_NE(e, cudaSuccess);
+    cudaGetLastError();
+    std::string what = "<no FLANNException>";
+    try {
+        flann::cuda::CUDABuffer<unsigned char> buf(SIZE_MAX, nullptr);
+    } catch (const flann::FLANNException& ex) {
+        what = ex.what();
+    }
+    EXPECT_NE(what.find(" (" + std::string(cudaGetErrorName(e)) + ")"), std::string::npos) << what;
+}
+
+TEST(CudaBufferThrowMessage, ResizeNamesTheStatusOfCudaMalloc)
+{
+    void* p = nullptr;
+    const cudaError_t e = cudaMalloc(&p, SIZE_MAX);
+    ASSERT_NE(e, cudaSuccess);
+    cudaGetLastError();
+    flann::cuda::CUDABuffer<unsigned char> buf;
+    std::string what = "<no FLANNException>";
+    try {
+        buf.resize(SIZE_MAX);
+    } catch (const flann::FLANNException& ex) {
+        what = ex.what();
+    }
+    EXPECT_NE(what.find(" (" + std::string(cudaGetErrorName(e)) + ")"), std::string::npos) << what;
+}
+
+TEST(CudaBufferThrowMessage, UploadNamesTheStatusOfTheCopy)
+{
+    int devices = 0;
+    if (cudaGetDeviceCount(&devices) == cudaSuccess && devices > 0) {
+        GTEST_SKIP() << "a zero-byte copy succeeds when a device is visible";
+    }
+    cudaGetLastError();
+    const cudaError_t e = cudaMemcpy(nullptr, nullptr, 0, cudaMemcpyHostToDevice);
+    ASSERT_NE(e, cudaSuccess);
+    cudaGetLastError();
+    flann::cuda::CUDABuffer<unsigned char> buf;
+    std::string what = "<no FLANNException>";
+    try {
+        buf.upload(nullptr, 0);
     } catch (const flann::FLANNException& ex) {
         what = ex.what();
     }

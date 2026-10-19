@@ -101,7 +101,7 @@ protected:
             if (err != cudaSuccess) {
                 throw FLANNException(
                     std::string("Failed to set CUDA device ") + std::to_string(device) +
-                    ": " + cudaGetErrorString(err)
+                    ": " + cudaGetErrorString(err) + " (" + cudaGetErrorName(err) + ")"
                 );
             }
             cuda_device_ = device;
