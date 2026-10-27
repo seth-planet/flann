@@ -36,6 +36,7 @@
 #include <thrust/unique.h>
 #include <thrust/scan.h>
 #include <thrust/execution_policy.h>
+#include <thrust/tuple.h>
 #include <flann/util/cutil_math.h>
 #include <stdlib.h>
 
