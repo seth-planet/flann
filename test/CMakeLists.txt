@@ -19,6 +19,10 @@ target_include_directories(flann_search_width_test PRIVATE ${PROJECT_SOURCE_DIR}
 if (BUILD_CUDA_LIB)
     flann_add_cuda_gtest(flann_cuda_check_message_test flann_cuda_check_message_test.cpp)
     target_include_directories(flann_cuda_check_message_test PRIVATE ${PROJECT_SOURCE_DIR}/src/cpp)
+
+    # Each arm builds its own small index from seeded random data, so it needs no dataset file.
+    flann_add_cuda_gtest(flann_cuda_launch_status_test flann_cuda_launch_status_test.cpp flann_cuda_s)
+    target_link_libraries(flann_cuda_launch_status_test ${LZ4_LIBRARIES} CUDA::cudart)
 endif()
 
 if (HDF5_FOUND)

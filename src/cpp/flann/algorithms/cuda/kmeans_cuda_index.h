@@ -76,6 +76,12 @@ bool launch_kmeans_search_cooperative(
     cudaStream_t stream = nullptr);
 
 // Forward declare padding kernel launcher
+/**
+ * @brief Pad queries from veclen to padded_veclen on the device.
+ * @return true on success, false on failure.
+ *         A false from a CUDA failure leaves that status pending in the last-error slot:
+ *         the caller must read it with cudaGetLastError(), which names it and clears it.
+ */
 template<typename T>
 bool launch_pad_queries(
     const T* src,
@@ -664,7 +670,12 @@ public:
                     this->veclen_,
                     padded_veclen_,
                     exec_stream)) {
-                throw FLANNException("Failed to launch GPU padding kernel");
+                const cudaError_t e = cudaGetLastError();
+                std::string msg = "Failed to launch GPU padding kernel";
+                if (e != cudaSuccess) {
+                    msg += std::string(": ") + cudaGetErrorString(e) + " (" + cudaGetErrorName(e) + ")";
+                }
+                throw FLANNException(msg);
             }
             kernel_queries = padded_queries.get();
         }
@@ -1225,7 +1236,12 @@ protected:
                     this->veclen_,
                     padded_veclen_,
                     stream)) {
-                throw FLANNException("Failed to launch GPU padding kernel");
+                const cudaError_t e = cudaGetLastError();
+                std::string msg = "Failed to launch GPU padding kernel";
+                if (e != cudaSuccess) {
+                    msg += std::string(": ") + cudaGetErrorString(e) + " (" + cudaGetErrorName(e) + ")";
+                }
+                throw FLANNException(msg);
             }
             raw_queries_gpu.freeAsync(stream);
         }

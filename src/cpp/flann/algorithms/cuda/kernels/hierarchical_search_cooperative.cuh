@@ -532,7 +532,10 @@ __global__ void hierarchical_search_cooperative_kernel(
  *        kDefaultSearchWidth. Refused, not clamped: hierarchical_search_width_error
  *        names the bounds and why each is silent.
  * @param stream CUDA stream for concurrent execution (nullptr = default stream)
- * @return true if the kernel launched, false for an unsupported k or an unusable width
+ * @return true if the kernel launched; false for an unsupported k, an unusable width or a
+ *         failed launch.
+ *         A false from a CUDA failure leaves that status pending in the last-error slot:
+ *         the caller must read it with cudaGetLastError(), which names it and clears it.
  */
 bool launch_hierarchical_search_cooperative(
     const unsigned char* dataset,
@@ -701,8 +704,8 @@ bool launch_hierarchical_search_cooperative(
         return false;
     }
 
-    // Check for kernel launch errors
-    cudaError_t err = cudaGetLastError();
+    // Peek, not Get: the caller turns this false into its exception and names the status.
+    cudaError_t err = cudaPeekAtLastError();
     if (err != cudaSuccess) {
         fprintf(stderr, "CUDA kernel launch failed: %s\n", cudaGetErrorString(err));
         return false;

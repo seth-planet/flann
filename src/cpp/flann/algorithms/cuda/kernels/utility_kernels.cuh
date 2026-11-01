@@ -88,7 +88,9 @@ __global__ void pad_queries_kernel(
  * @param veclen Original vector length
  * @param padded_veclen Padded vector length
  * @param stream CUDA stream (nullptr = default stream)
- * @return true on success, false on failure
+ * @return true on success, false on failure.
+ *         A false from a CUDA failure leaves that status pending in the last-error slot:
+ *         the caller must read it with cudaGetLastError(), which names it and clears it.
  */
 template<typename T>
 bool launch_pad_queries(
@@ -130,7 +132,8 @@ bool launch_pad_queries(
         src, dst, num_queries, veclen, padded_veclen
     );
 
-    cudaError_t err = cudaGetLastError();
+    // Peek, not Get: the caller turns this false into its exception and names the status.
+    cudaError_t err = cudaPeekAtLastError();
     if (err != cudaSuccess) {
         fprintf(stderr, "[CUDA] pad_queries_kernel launch failed: %s\n",
                 cudaGetErrorString(err));

@@ -52,6 +52,13 @@ namespace cuda {
 
 // Forward declare kernel launch functions (defined in hierarchical_cuda_kernels.cu)
 // These are always forward declared - definition is in the .cu compilation unit
+/**
+ * @brief Launch the cooperative hierarchical search kernel.
+ * @return true if the kernel launched; false for an unsupported k, an unusable width or a
+ *         failed launch.
+ *         A false from a CUDA failure leaves that status pending in the last-error slot:
+ *         the caller must read it with cudaGetLastError(), which names it and clears it.
+ */
 bool launch_hierarchical_search_cooperative(
     const unsigned char* dataset,
     const unsigned char* queries,
@@ -831,7 +838,12 @@ public:
                     this->veclen_,
                     padded_bytes,
                     exec_stream)) {
-                throw FLANNException("Failed to launch GPU padding kernel");
+                const cudaError_t e = cudaGetLastError();
+                std::string msg = "Failed to launch GPU padding kernel";
+                if (e != cudaSuccess) {
+                    msg += std::string(": ") + cudaGetErrorString(e) + " (" + cudaGetErrorName(e) + ")";
+                }
+                throw FLANNException(msg);
             }
             kernel_queries = padded_queries.get();
         }
@@ -855,8 +867,13 @@ public:
         );
 
         if (!success) {
-            throw FLANNException("Kernel launch failed for k=" + std::to_string(knn) +
-                                 " at search width " + std::to_string(search_width));
+            const cudaError_t e = cudaGetLastError();
+            std::string msg = "Kernel launch failed for k=" + std::to_string(knn) +
+                              " at search width " + std::to_string(search_width);
+            if (e != cudaSuccess) {
+                msg += std::string(": ") + cudaGetErrorString(e) + " (" + cudaGetErrorName(e) + ")";
+            }
+            throw FLANNException(msg);
         }
 
         // 8. Check for kernel launch errors (non-blocking)
@@ -1493,7 +1510,12 @@ public:
                     this->veclen_,
                     padded_bytes,
                     stream)) {
-                throw FLANNException("Failed to launch GPU padding kernel");
+                const cudaError_t e = cudaGetLastError();
+                std::string msg = "Failed to launch GPU padding kernel";
+                if (e != cudaSuccess) {
+                    msg += std::string(": ") + cudaGetErrorString(e) + " (" + cudaGetErrorName(e) + ")";
+                }
+                throw FLANNException(msg);
             }
             raw_queries_gpu.freeAsync(stream);  // Free padding temp buffer
         }
@@ -1517,8 +1539,13 @@ public:
         );
 
         if (!success) {
-            throw FLANNException("Kernel launch failed for k=" + std::to_string(knn) +
-                                 " at search width " + std::to_string(search_width));
+            const cudaError_t e = cudaGetLastError();
+            std::string msg = "Kernel launch failed for k=" + std::to_string(knn) +
+                              " at search width " + std::to_string(search_width);
+            if (e != cudaSuccess) {
+                msg += std::string(": ") + cudaGetErrorString(e) + " (" + cudaGetErrorName(e) + ")";
+            }
+            throw FLANNException(msg);
         }
 
         // Check for kernel launch errors (non-blocking)
