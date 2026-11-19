@@ -473,6 +473,37 @@ public:
     bool isGPUOnlyMode() const { return gpu_only_mode_; }
 
     /**
+     * @brief Read-only device view of the indexed points: row i is point i, row_bytes apart.
+     */
+    struct DeviceDatasetView
+    {
+        const unsigned char* data;  ///< Device pointer to row 0
+        size_t row_bytes;           ///< Stride between rows (the padded descriptor size)
+        size_t rows;                ///< Number of rows (== size())
+    };
+
+    /**
+     * @brief The device copy of the dataset the search reads, in point order.
+     *
+     * Row i is the point given at build (or loaded) as point i, on both the build and the v2 load
+     * path, which is the same numbering the search returns as neighbour ids. The pointer stays
+     * valid until addPoints, removePoint, loadIndex or destruction frees the GPU workspace; a
+     * caller keeping it longer than one search must rule those out itself. Read under the shared
+     * lock for the same reason the search's readiness check is.
+     *
+     * @return The view
+     * @throws FLANNException if the GPU index is not initialised
+     */
+    DeviceDatasetView deviceDataset() const
+    {
+        std::shared_lock<std::shared_mutex> lock(this->rw_lock_);
+        if (!gpu_initialized_) {
+            throw FLANNException("deviceDataset: GPU index not initialized. Call buildCUDAKnnSearch() or prepareGPUIndex() first.");
+        }
+        return {reinterpret_cast<const unsigned char*>(dataset_ptr_), gpu_padded_bytes_ * sizeof(ElementType), this->size_};
+    }
+
+    /**
      * @brief Get point by ID (throws in GPU-only mode)
      *
      * @param id Point ID

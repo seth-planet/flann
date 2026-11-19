@@ -23,6 +23,10 @@ if (BUILD_CUDA_LIB)
     # Each arm builds its own small index from seeded random data, so it needs no dataset file.
     flann_add_cuda_gtest(flann_cuda_launch_status_test flann_cuda_launch_status_test.cpp flann_cuda_s)
     target_link_libraries(flann_cuda_launch_status_test ${LZ4_LIBRARIES} CUDA::cudart)
+
+    # Builds and saves its own small index, so it needs no dataset file.
+    flann_add_cuda_gtest(flann_cuda_device_dataset_test flann_cuda_device_dataset_test.cpp flann_cuda_s)
+    target_link_libraries(flann_cuda_device_dataset_test ${LZ4_LIBRARIES} CUDA::cudart)
 endif()
 
 if (HDF5_FOUND)
