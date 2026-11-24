@@ -785,6 +785,7 @@ public:
 #endif /* FLANN_USE_OPENCL */
 
 protected:
+#ifdef FLANN_USE_OPENCL
     /**
      * Are the conditions right for an OpenCL search to be faster than the
      * regular scalar search? I imagine this will require experimentation to
@@ -818,6 +819,7 @@ protected:
         // unimplemented in nn_index
         printf("in unimplemented knnSearchCL()!\n");
     }
+#endif /* FLANN_USE_OPENCL */
 
     virtual void freeIndex() = 0;
 
